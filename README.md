@@ -1,55 +1,52 @@
-# BurnRead
+# 🔥 Burn After Reading
 
-BurnRead is a simple self-destructing message service written in PHP.
+A secure, self-destructing message system built with PHP. Features **AES-256 encryption**, **file attachments**, and a modern **Glassmorphism UI**.
 
-It allows users to create encrypted messages that can be shared via a link and will be destroyed automatically based on predefined rules.
+## 🚀 Quick Start
+
+1.  Upload `index.php` to your server.
+2.  Create a file named `.env` in the same directory.
+3.  **Copy the code below** into `.env` and configure it.
+4.  Ensure the folder has write permissions (chmod 755).
+
+## ⚙️ Configuration (.env)
+
+```ini
+# --- Security (REQUIRED) ---
+# Generate a strong random string (32+ chars). 
+# If changed, old messages cannot be decrypted.
+ENCRYPTION_KEY="Change_This_To_A_Random_String_A1B2C3D4E5"
+
+# --- Limits ---
+# Default Expiry (Days:Hours:Minutes:Seconds)
+MESSAGE_EXPIRY="30:0:0:0"
+
+# Max allowed read count per message
+MAX_READ_LIMIT="10"
+
+# Max file upload size in MB
+UPLOAD_MAX_MB="10"
+
+# Allowed file extensions
+UPLOAD_TYPES="jpg,png,gif,zip,pdf,txt,doc,docx"
+
+# --- Site Settings ---
+# Default Language ('cn' or 'en')
+DEFAULT_LANG="en"
+
+# Your Site Domain (No trailing slash)
+SITE_DOMAIN="https://your-domain.com"
+
+# Background Wallpaper URL
+SITE_BACKGROUND="https://t.alcy.cc/moez"
+
+# Site Icon Path
+SITE_ICON="/favicon.jpg"
+```
+
+## 🔒 Security Note
+*   All data is encrypted at rest.
+*   Data is permanently deleted after the read limit or expiry time is reached.
+*   **Always use HTTPS** to ensure keys are transmitted securely.
 
 ---
-
-## Features
-
-- ✏️ Create and edit text messages
-- 🔗 Share messages via a unique link
-- ⏱️ Set expiration time
-- 🔢 Limit number of views
-- 🔐 Optional password protection
-- 🔒 End-to-end encryption using AES-256
-- 🔥 Message is permanently deleted after expiration or view limit is reached
-
----
-
-## Encryption
-
-All message content is encrypted using **AES-256** before storage.  
-The server never stores plaintext message content.
-
----
-
-## Requirements
-
-- PHP >= 7.0
-- Web server (Nginx / Apache)
----
-
-## Basic Workflow
-
-1. User creates a message and sets expiration rules
-2. Message is encrypted and stored
-3. A one-time access link is generated
-4. Message is decrypted only when accessed
-5. Message is destroyed after conditions are met
-
----
-
-## Security Notice
-
-This project is a lightweight implementation intended for temporary message sharing.  
-It has not undergone a formal security audit.
-
-Do not use it for highly sensitive or critical data without additional security hardening.
-
----
-
-## License
-
-MIT License
