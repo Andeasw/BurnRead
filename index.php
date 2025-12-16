@@ -3,8 +3,21 @@
  * Secure Burn-After-Reading System
  * By Prince 2025.12
  */
+// --- Session & Security Init ---
+session_start();
+if (empty($_SESSION['csrf_token'])) {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+}
 
-// --- 1. Init ---
+function secure_directory($path) {
+    if (!is_dir($path)) mkdir($path, 0755, true);
+    $htaccess = $path . '/.htaccess';
+    if (!file_exists($htaccess)) file_put_contents($htaccess, "Deny from all");
+}
+secure_directory('messages');
+secure_directory('uploads');
+
+// --- Configuration ---
 function loadEnv($path) {
     if (!file_exists($path)) return [];
     $lines = file($path, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
@@ -20,175 +33,242 @@ function loadEnv($path) {
     return $env;
 }
 $env = loadEnv(__DIR__ . '/.env');
-if (empty($env['ENCRYPTION_KEY'])) die("Error: ENCRYPTION_KEY missing");
+if (empty($env['ENCRYPTION_KEY'])) die("System Error: Configuration missing.");
 
 $githubUrl = "https://github.com/Andeasw/BurnRead";
-$keyEnv = $env['ENCRYPTION_KEY'];
+$serverKey = $env['ENCRYPTION_KEY']; 
 $domain = $env['SITE_DOMAIN'] ?? $_SERVER['HTTP_HOST'];
 $maxReads = intval($env['MAX_READ_LIMIT'] ?? 10);
 $uploadMaxMB = intval($env['UPLOAD_MAX_MB'] ?? 5);
 $allowedExts = explode(',', $env['UPLOAD_TYPES'] ?? 'jpg,png,zip,txt');
-$defaultExpiry = $env['MESSAGE_EXPIRY'] ?? '30:0:0:0';
-list($md, $mh, $mm, $ms) = array_pad(explode(':', $defaultExpiry), 4, 0);
-$maxSeconds = ($md * 86400) + ($mh * 3600) + ($mm * 60) + $ms;
-$maxTimeStr = "{$md}d {$mh}h";
+$maxTimeStr = "30d"; 
 
-$langCode = $_GET['lang'] ?? $_COOKIE['site_lang'] ?? $env['DEFAULT_LANG'] ?? 'cn';
+$langInput = $_GET['lang'] ?? $_COOKIE['site_lang'] ?? $env['DEFAULT_LANG'] ?? 'cn';
+$langCode = in_array($langInput, ['cn', 'en']) ? $langInput : 'cn';
 setcookie('site_lang', $langCode, time() + 86400 * 30, "/");
 
 $i18n = [
     'cn' => [
-        'title' => '阅后即焚', 'subtitle' => '安全加密 · 隐私保护',
-        'desc' => '创建加密消息', 'nickname' => '昵称 (选填)',
-        'note' => '标题 (选填)', 'pass_set' => '访问密码 (选填)',
+        'browser_title' => 'BurnRead',
+        'app_title' => '阅后即焚',
+        'subtitle' => '安全加密 · 隐私保护',
+        'desc' => '创建加密消息', 'nickname' => '您的昵称 (选填)',
+        'note' => '消息标题 (选填)', 'pass_set' => '访问密码 (选填)',
         'pass_req' => '请输入访问密码', 'reads' => '阅读次数',
-        'expiry' => '销毁时间', 'gen_btn' => '生成链接',
+        'expiry' => '销毁时间', 'gen_btn' => '生成加密链接',
         'copy' => '复制', 'copied' => '已复制',
-        'back' => '返回', 'edit' => '编辑', 'preview' => '预览',
+        'back' => '返回首页', 'edit' => '编辑', 'preview' => '预览',
         'placeholder' => '在此输入机密消息... (支持 Markdown)',
         'ready' => '链接已生成', 'ready_desc' => '有效阅读次数: %s',
-        'msg_404' => '消息不存在或已销毁', 'msg_view' => '立即查看',
-        'unlock' => '解锁', 'left' => '剩余: %s 次',
+        'msg_404' => '消息不存在或已销毁', 'msg_404_desc' => '该链接可能已达到阅读限制、过期或被删除。',
+        'msg_view' => '立即查看',
+        'unlock' => '解锁内容', 'left' => '剩余: %s 次',
         'destroyed' => '已销毁', 'day' => '天', 'hour' => '时', 'min' => '分',
         'err_empty' => '内容为空', 'err_pass' => '密码错误',
-        'sec_info' => '基础', 'sec_safe' => '安全',
-        'upload_label' => '附件', 'upload_hint' => '最大 %sMB, 支持 %s',
+        'sec_info' => '基础信息', 'sec_safe' => '安全设置',
+        'upload_label' => '附件上传', 'upload_hint' => '最大 %sMB, 支持 %s',
         'download' => '下载附件', 'err_upload' => '文件不合法或过大',
-        'max_limit' => '上限: %s', 'max_time' => '上限: %s',
-        'file_ready' => '包含一个加密附件', 'select_file' => '点击选择文件...'
+        'max_limit' => '上限: %s', 'max_time' => '上限: 30天',
+        'file_ready' => '包含一个加密附件', 'select_file' => '点击选择文件...',
+        'err_csrf' => '会话过期，请刷新页面', 'err_system' => '系统繁忙',
+        'gen_pass_title' => '生成随机密码', 'toggle_pass' => '显示/隐藏密码'
     ],
     'en' => [
-        'title' => 'Burn Read', 'subtitle' => 'Secure & Private',
+        'browser_title' => 'Burn Read - Secure Transfer',
+        'app_title' => 'Burn Read',
+        'subtitle' => 'E2E Encryption · Zero Trace',
         'desc' => 'Create secure message', 'nickname' => 'Name (Opt)',
         'note' => 'Title (Opt)', 'pass_set' => 'Password (Opt)',
         'pass_req' => 'Password Required', 'reads' => 'Read Limit',
-        'expiry' => 'Timer', 'gen_btn' => 'Generate',
+        'expiry' => 'Timer', 'gen_btn' => 'Generate Link',
         'copy' => 'Copy', 'copied' => 'Copied',
-        'back' => 'Back', 'edit' => 'Edit', 'preview' => 'Preview',
+        'back' => 'Home', 'edit' => 'Edit', 'preview' => 'Preview',
         'placeholder' => 'Secret message... (Markdown)',
         'ready' => 'Link Ready', 'ready_desc' => 'Readable %s times',
-        'msg_404' => 'Not found / Destroyed', 'msg_view' => 'View',
+        'msg_404' => 'Not found / Destroyed', 'msg_404_desc' => 'Message may have expired or reached read limit.',
+        'msg_view' => 'View',
         'unlock' => 'Unlock', 'left' => '%s left',
         'destroyed' => 'Destroyed', 'day' => 'd', 'hour' => 'h', 'min' => 'm',
         'err_empty' => 'Empty content', 'err_pass' => 'Invalid Pass',
-        'sec_info' => 'Info', 'sec_safe' => 'Security',
-        'upload_label' => 'File', 'upload_hint' => 'Max %sMB, %s',
+        'sec_info' => 'Basic Info', 'sec_safe' => 'Security',
+        'upload_label' => 'File Upload', 'upload_hint' => 'Max %sMB, %s',
         'download' => 'Download File', 'err_upload' => 'Invalid File',
-        'max_limit' => 'Max: %s', 'max_time' => 'Max: %s',
-        'file_ready' => 'Contains encrypted file', 'select_file' => 'Click to select file...'
+        'max_limit' => 'Max: %s', 'max_time' => 'Max: 30d',
+        'file_ready' => 'Contains encrypted file', 'select_file' => 'Click to select file...',
+        'err_csrf' => 'Session expired, refresh page', 'err_system' => 'System Busy',
+        'gen_pass_title' => 'Generate Random Password', 'toggle_pass' => 'Show/Hide Password'
     ]
 ];
-$L = $i18n[$langCode] ?? $i18n['cn'];
+$L = $i18n[$langCode];
 
-// --- 2. Crypto ---
-function encrypt($data, $key) {
-    global $keyEnv;
+// --- Crypto Functions ---
+function encrypt_data($plaintext, $key) {
+    global $serverKey;
     $iv = random_bytes(16);
-    $hashKey = hash_hmac('sha256', $key, $keyEnv, true);
-    return base64_encode($iv . openssl_encrypt($data, 'aes-256-cbc', $hashKey, 0, $iv));
+    $hmacKey = hash_hkdf('sha256', $key, 32, 'hmac', $serverKey); 
+    $ciphertext = openssl_encrypt($plaintext, 'aes-256-cbc', $key, 0, $iv);
+    $mac = hash_hmac('sha256', $iv . $ciphertext, $hmacKey, true);
+    return base64_encode($iv . $mac . $ciphertext);
 }
-function decrypt($data, $key) {
-    global $keyEnv;
-    $data = base64_decode($data);
-    if (strlen($data) < 16) return false;
-    $iv = substr($data, 0, 16);
-    $hashKey = hash_hmac('sha256', $key, $keyEnv, true);
-    return openssl_decrypt(substr($data, 16), 'aes-256-cbc', $hashKey, 0, $iv);
+function decrypt_data($payload, $key) {
+    global $serverKey;
+    $decoded = base64_decode($payload);
+    if (strlen($decoded) < 48) return false;
+    $iv = substr($decoded, 0, 16);
+    $mac = substr($decoded, 16, 32);
+    $ciphertext = substr($decoded, 48);
+    $hmacKey = hash_hkdf('sha256', $key, 32, 'hmac', $serverKey);
+    if (!hash_equals($mac, hash_hmac('sha256', $iv . $ciphertext, $hmacKey, true))) return false;
+    return openssl_decrypt($ciphertext, 'aes-256-cbc', $key, 0, $iv);
 }
+function derive_key($password, $salt) {
+    return hash_pbkdf2('sha256', $password, $salt, 100000, 32, true);
+}
+$mimeWhitelist = [
+    'jpg' => 'image/jpeg', 'jpeg' => 'image/jpeg', 'png' => 'image/png', 'gif' => 'image/gif',
+    'txt' => 'text/plain', 'pdf' => 'application/pdf', 'zip' => 'application/zip',
+    'doc' => 'application/msword', 'docx' => 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+];
 
-// --- 3. Logic ---
+// --- Logic Router ---
 $isPost = $_SERVER['REQUEST_METHOD'] === 'POST';
 $isFile = isset($_GET['file'], $_GET['code']);
+$errorView = false; 
 
+// Handle Creation
 if ($isPost && !$isFile) {
+    if (!hash_equals($_SESSION['csrf_token'], $_POST['csrf_token'] ?? '')) die($L['err_csrf']);
     $content = $_POST['message'] ?? '';
     if (empty($content)) die($L['err_empty']);
 
+    $masterKey = random_bytes(32);
+    $salt = random_bytes(16);
+    $verifyCode = bin2hex(random_bytes(32));
+    
     $encPaths = null; $encName = null;
-    $randKey = bin2hex(random_bytes(16));
-
     if (!empty($_FILES['file']['name'])) {
         $f = $_FILES['file'];
         $ext = strtolower(pathinfo($f['name'], PATHINFO_EXTENSION));
-        if ($f['size'] > $uploadMaxMB * 1024 * 1024 || !in_array($ext, $allowedExts)) die($L['err_upload']);
-        
-        if (!is_dir('uploads')) mkdir('uploads', 0755, true);
+        $finfo = finfo_open(FILEINFO_MIME_TYPE);
+        $realMime = finfo_file($finfo, $f['tmp_name']);
+        finfo_close($finfo);
+        if ($f['size'] > $uploadMaxMB * 1024 * 1024 || !in_array($ext, $allowedExts) || !isset($mimeWhitelist[$ext]) || $mimeWhitelist[$ext] !== $realMime) {
+            die($L['err_upload']);
+        }
         $encFileName = 'uploads/' . bin2hex(random_bytes(16)) . '.dat';
-        file_put_contents($encFileName, encrypt(file_get_contents($f['tmp_name']), $randKey));
+        file_put_contents($encFileName, encrypt_data(file_get_contents($f['tmp_name']), $masterKey));
         $encPaths = $encFileName;
-        $encName = encrypt($f['name'], $randKey);
+        $encName = encrypt_data($f['name'], $masterKey);
     }
 
-    $limit = min(max(intval($_POST['limit'] ?? 1), 1), $maxReads);
-    $expS = (intval($_POST['d']??0)*86400) + (intval($_POST['h']??0)*3600) + (intval($_POST['m']??0)*60);
-    if ($expS <= 0 || $expS > $maxSeconds) $expS = $maxSeconds;
+    $userPass = $_POST['pass'] ?? '';
+    $passVerifyHash = (!empty($userPass)) ? password_hash($userPass, PASSWORD_ARGON2ID) : null;
+    $wrappingKey = (!empty($userPass)) ? derive_key($userPass, $salt) : derive_key($verifyCode, $salt);
 
-    $verifyCode = bin2hex(random_bytes(4));
-    $passHash = !empty($_POST['pass']) ? hash('sha256', $_POST['pass']) : null;
+    $limit = min(max(intval($_POST['limit'] ?? 1), 1), $maxReads);
+    
+    // Time Logic: Default 7 days if 0
+    $expS = (intval($_POST['d']??0)*86400) + (intval($_POST['h']??0)*3600) + (intval($_POST['m']??0)*60);
+    if ($expS <= 0) $expS = 7 * 86400; 
+    $maxS = 30 * 86400;
+    if ($expS > $maxS) $expS = $maxS;
 
     $data = [
-        'msg' => encrypt($content, $randKey),
-        'name' => encrypt($_POST['name']??'', $randKey),
-        'note' => encrypt($_POST['note']??'', $randKey),
+        'msg' => encrypt_data($content, $masterKey),
+        'name' => encrypt_data($_POST['name']??'', $masterKey),
+        'note' => encrypt_data($_POST['note']??'', $masterKey),
         'file_path' => $encPaths, 'file_name' => $encName,
-        'pass' => $passHash,
-        'key_v' => encrypt($randKey, hash('sha256', $verifyCode)),
-        'key_p' => $passHash ? encrypt($randKey, $passHash) : null,
-        'code_h' => hash('sha256', $verifyCode),
+        'salt' => base64_encode($salt),
+        'master_key_enc' => encrypt_data($masterKey, $wrappingKey),
+        'pass_hash' => $passVerifyHash,
+        'code_hash' => hash('sha256', $verifyCode),
         'time' => time(), 'exp' => $expS, 'reads' => $limit
     ];
 
-    $fname = 'messages/' . bin2hex(random_bytes(8)) . '.json';
-    if (!is_dir('messages')) mkdir('messages', 0755, true);
+    $fname = 'messages/' . bin2hex(random_bytes(12)) . '.json';
+    $link = $domain . "/?file=" . urlencode(basename($fname)) . "&code=" . urlencode($verifyCode);
     file_put_contents($fname, json_encode($data));
-    $link = $domain . "/?file=" . basename($fname) . "&code=" . $verifyCode;
     $successView = true;
 }
 
+// Handle Viewing
 if ($isFile) {
-    $file = "messages/".basename($_GET['file']);
-    $notFound = "<div class='glass p-8 rounded-2xl text-center max-w-sm mx-auto'><div class='text-4xl text-gray-400 mb-4'><i class='fas fa-wind'></i></div><div class='text-red-500 font-bold mb-6'>{$L['msg_404']}</div><a href='/' class='glass px-6 py-2 rounded-full text-blue-500 text-sm'>{$L['back']}</a></div>";
+    $file = "messages/" . basename($_GET['file']);
     
-    if (!file_exists($file)) die($notFound);
-    $data = json_decode(file_get_contents($file), true);
-    if (time() - $data['time'] > $data['exp']) {
-        if(!empty($data['file_path']) && file_exists($data['file_path'])) unlink($data['file_path']);
-        unlink($file); die($notFound);
-    }
+    if (!file_exists($file)) {
+        $errorView = true; 
+    } else {
+        $fp = fopen($file, 'r+');
+        if (flock($fp, LOCK_EX)) {
+            rewind($fp);
+            $jsonRaw = stream_get_contents($fp);
+            $data = json_decode($jsonRaw, true);
+            $isValid = is_array($data) && isset($data['msg'], $data['master_key_enc']);
+            
+            if (!$isValid || (time() - $data['time'] > $data['exp'])) {
+                if(isset($data['file_path']) && file_exists($data['file_path'])) unlink($data['file_path']);
+                ftruncate($fp, 0); fflush($fp); fsync($fp);
+                unlink($file);
+                flock($fp, LOCK_UN); fclose($fp);
+                $errorView = true; 
+            } else {
+                $passReq = !empty($data['pass_hash']);
+                $confirm = isset($_GET['confirm']);
+                $showMsg = false; $err = '';
 
-    $passReq = !empty($data['pass']);
-    $confirm = isset($_GET['confirm']);
-    $showMsg = false; $err = '';
+                if ($confirm) {
+                    $userPass = $_POST['pass'] ?? '';
+                    $urlCode = $_GET['code'] ?? '';
+                    $salt = base64_decode($data['salt']);
+                    
+                    $unwrappedMasterKey = false;
+                    if ($passReq) {
+                        if (password_verify($userPass, $data['pass_hash'])) {
+                            $wrappingKey = derive_key($userPass, $salt);
+                            $unwrappedMasterKey = decrypt_data($data['master_key_enc'], $wrappingKey);
+                        } else $err = $L['err_pass'];
+                    } else {
+                        if (hash_equals($data['code_hash'], hash('sha256', $urlCode))) {
+                            $wrappingKey = derive_key($urlCode, $salt);
+                            $unwrappedMasterKey = decrypt_data($data['master_key_enc'], $wrappingKey);
+                        } else $err = $L['msg_404'];
+                    }
 
-    if ($confirm) {
-        $inHash = !empty($_POST['pass']) ? hash('sha256', $_POST['pass']) : null;
-        $checkHash = $passReq ? $inHash : hash('sha256', $_GET['code']);
-        
-        if ($passReq && $inHash !== $data['pass']) {
-            $err = $L['err_pass'];
-        } else {
-            $key = decrypt($passReq ? $data['key_p'] : $data['key_v'], $checkHash);
-            if ($key) {
-                $msg = decrypt($data['msg'], $key);
-                $name = decrypt($data['name'], $key);
-                $note = decrypt($data['note'], $key);
-                
-                $downloadUrl = null; $fileName = null;
-                if (!empty($data['file_path']) && file_exists($data['file_path'])) {
-                    $fileName = decrypt($data['file_name'], $key);
-                    $fileContent = decrypt(file_get_contents($data['file_path']), $key);
-                    $b64 = base64_encode($fileContent);
-                    $downloadUrl = "data:application/octet-stream;base64,$b64";
+                    if ($unwrappedMasterKey) {
+                        $msg = decrypt_data($data['msg'], $unwrappedMasterKey);
+                        $name = decrypt_data($data['name'], $unwrappedMasterKey);
+                        $note = decrypt_data($data['note'], $unwrappedMasterKey);
+                        
+                        $downloadUrl = null; $fileName = null;
+                        if (!empty($data['file_path']) && file_exists($data['file_path'])) {
+                            $fileName = decrypt_data($data['file_name'], $unwrappedMasterKey);
+                            $fileContent = decrypt_data(file_get_contents($data['file_path']), $unwrappedMasterKey);
+                            $b64 = base64_encode($fileContent);
+                            $downloadUrl = "data:application/octet-stream;base64,$b64";
+                        }
+
+                        $data['reads']--;
+                        if ($data['reads'] <= 0) {
+                            if(!empty($data['file_path']) && file_exists($data['file_path'])) unlink($data['file_path']);
+                            ftruncate($fp, 0); fflush($fp); fsync($fp);
+                            unlink($file);
+                            $isDeleted = true;
+                        } else {
+                            rewind($fp); fwrite($fp, json_encode($data));
+                            ftruncate($fp, ftell($fp)); fflush($fp); fsync($fp);
+                        }
+                        $showMsg = true;
+                    } else {
+                        if(empty($err)) $err = "Decryption Error";
+                    }
                 }
-
-                $data['reads']--;
-                if ($data['reads'] <= 0) {
-                    if(!empty($data['file_path']) && file_exists($data['file_path'])) unlink($data['file_path']);
-                    unlink($file);
-                } else file_put_contents($file, json_encode($data));
                 
-                $showMsg = true;
-            } else $err = "Decryption Error";
+                if (!isset($isDeleted)) { flock($fp, LOCK_UN); fclose($fp); }
+                else { flock($fp, LOCK_UN); fclose($fp); }
+            }
+        } else {
+            fclose($fp);
+            die($L['err_system']);
         }
     }
 }
@@ -198,38 +278,59 @@ if ($isFile) {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title><?php echo $L['title']; ?></title>
+    <title><?php echo $L['browser_title']; ?></title>
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self' https: data: 'unsafe-inline' 'unsafe-eval';">
     <script src="https://cdn.tailwindcss.com"></script>
     <script>tailwind.config = { darkMode: 'class' }</script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.0.6/purify.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"/>
     <?php if(!empty($env['SITE_ICON'])) echo '<link rel="icon" href="'.$env['SITE_ICON'].'">'; ?>
     <style>
         body { font-family: 'Inter', sans-serif; background: url('<?php echo $env['SITE_BACKGROUND']; ?>') no-repeat center center fixed; background-size: cover; }
-        .glass { background: rgba(255, 255, 255, 0.7); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); border: 1px solid rgba(255, 255, 255, 0.6); box-shadow: 0 4px 30px rgba(0, 0, 0, 0.05); }
+        
+        .glass { background: rgba(255, 255, 255, 0.7); backdrop-filter: blur(25px); -webkit-backdrop-filter: blur(25px); border: 1px solid rgba(255, 255, 255, 0.6); box-shadow: 0 8px 32px rgba(0, 0, 0, 0.08); }
         .dark .glass { background: rgba(20, 25, 40, 0.75); border: 1px solid rgba(255, 255, 255, 0.08); color: #e2e8f0; }
-        .glass-input { background: rgba(255, 255, 255, 0.5); border: 1px solid rgba(255, 255, 255, 0.4); }
-        .dark .glass-input { background: rgba(0, 0, 0, 0.2); border: 1px solid rgba(255, 255, 255, 0.1); color: white; }
-        .glass-input:focus { background: rgba(255, 255, 255, 0.9); border-color: #3B82F6; }
+        
+        /* Inputs Contrast Fix */
+        .glass-input { color: #1f2937; background: rgba(255, 255, 255, 0.5); border: 1px solid rgba(255, 255, 255, 0.4); }
+        .glass-input:focus { color: #000000; background: rgba(255, 255, 255, 0.95); border-color: #3B82F6; box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.15); }
+        .dark .glass-input { color: #f3f4f6; background: rgba(0, 0, 0, 0.2); border: 1px solid rgba(255, 255, 255, 0.1); }
+        .dark .glass-input:focus { color: #ffffff; background: rgba(30, 41, 59, 0.9); border-color: #60A5FA; }
+
         .markdown-body pre { background: rgba(0,0,0,0.05); padding: 0.8rem; border-radius: 0.5rem; overflow-x: auto; }
         .dark .markdown-body pre { background: rgba(0,0,0,0.4); }
         .markdown-body blockquote { border-left: 3px solid #60A5FA; padding-left: 0.8rem; color: #64748b; }
         .ctrl-btn { width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; border-radius: 4px; transition: 0.2s; }
         .ctrl-btn:hover { background: rgba(0,0,0,0.05); }
         .dark .ctrl-btn:hover { background: rgba(255,255,255,0.1); }
-        /* Scrollbar */
+        
+        /* Fire Icon Glow */
+        .fire-icon-glow {
+            font-size: 2.5rem;
+            background: linear-gradient(135deg, #fbbf24 0%, #ef4444 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            filter: drop-shadow(0 0 8px rgba(245, 158, 11, 0.5));
+            animation: pulse-fire 2s infinite;
+        }
+        @keyframes pulse-fire {
+            0% { filter: drop-shadow(0 0 8px rgba(245, 158, 11, 0.4)); transform: scale(1); }
+            50% { filter: drop-shadow(0 0 15px rgba(239, 68, 68, 0.6)); transform: scale(1.05); }
+            100% { filter: drop-shadow(0 0 8px rgba(245, 158, 11, 0.4)); transform: scale(1); }
+        }
+
         ::-webkit-scrollbar { width: 4px; height: 4px; }
         ::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.2); border-radius: 2px; }
     </style>
 </head>
 <body class="min-h-screen flex flex-col text-gray-800 dark:text-gray-100">
 
-<!-- Main -->
 <div class="flex-grow flex items-center justify-center p-4">
     <div class="w-full max-w-5xl">
 
-    <?php
+    <?php 
     function renderTools($L, $langCode) {
         $nextLang = $langCode==='cn'?'en':'cn';
         return "<div class='flex items-center gap-2 ml-3 pl-3 border-l border-gray-300 dark:border-gray-600 h-5'>
@@ -239,8 +340,11 @@ if ($isFile) {
     ?>
 
     <?php if (isset($successView)): ?>
+        <!-- Success View -->
         <div class="glass rounded-2xl p-8 max-w-md mx-auto text-center animate-fade-in">
-            <div class="w-14 h-14 bg-gradient-to-tr from-green-400 to-green-600 text-white rounded-xl flex items-center justify-center mx-auto mb-4 text-2xl shadow-lg shadow-green-500/30"><i class="fas fa-check"></i></div>
+            <div class="w-16 h-16 mx-auto mb-4 flex items-center justify-center">
+                <i class="fas fa-circle-check text-5xl text-emerald-500 filter drop-shadow-md"></i>
+            </div>
             <h2 class="text-2xl font-bold mb-1"><?php echo $L['ready']; ?></h2>
             <p class="text-gray-500 text-xs mb-6"><?php echo sprintf($L['ready_desc'], $limit); ?></p>
             <div class="bg-white/50 dark:bg-black/30 border border-blue-200 dark:border-blue-800/50 rounded-lg p-3 mb-6 font-mono text-xs text-blue-600 dark:text-blue-400 break-all select-all shadow-inner"><?php echo $link; ?></div>
@@ -250,7 +354,25 @@ if ($isFile) {
             </div>
         </div>
 
+    <?php elseif ($errorView): ?>
+        <!-- 404/Deleted View -->
+        <div class="glass rounded-2xl p-10 max-w-sm mx-auto text-center animate-fade-in shadow-2xl relative overflow-hidden">
+            <div class="absolute -top-10 -right-10 w-32 h-32 bg-red-500/10 rounded-full blur-2xl"></div>
+            <div class="absolute -bottom-10 -left-10 w-32 h-32 bg-orange-500/10 rounded-full blur-2xl"></div>
+            <div class="relative z-10">
+                <div class="mb-6 animate-pulse-slow">
+                    <i class="fas fa-bomb text-6xl bg-gradient-to-br from-gray-400 to-gray-600 bg-clip-text text-transparent filter drop-shadow-lg"></i>
+                </div>
+                <h2 class="text-2xl font-bold mb-2 text-gray-800 dark:text-gray-100"><?php echo $L['msg_404']; ?></h2>
+                <p class="text-xs text-gray-500 dark:text-gray-400 mb-8 leading-relaxed"><?php echo $L['msg_404_desc']; ?></p>
+                <a href="/" class="inline-flex items-center gap-2 glass px-8 py-3 rounded-full text-blue-600 dark:text-blue-400 text-sm font-bold hover:bg-white/80 dark:hover:bg-white/10 transition-all hover:scale-105 shadow-md">
+                    <i class="fas fa-house"></i> <?php echo $L['back']; ?>
+                </a>
+            </div>
+        </div>
+
     <?php elseif ($isFile && $showMsg): ?>
+        <!-- Message View -->
         <div class="glass rounded-2xl w-full max-w-4xl h-[600px] flex flex-col relative overflow-hidden shadow-2xl mx-auto">
             <div class="px-6 py-4 border-b border-gray-200/50 dark:border-gray-700/50 flex justify-between items-center bg-white/30 dark:bg-black/10 backdrop-blur-sm z-10">
                 <div class="flex items-center gap-3">
@@ -277,16 +399,23 @@ if ($isFile) {
                 <textarea id="raw-content" class="hidden"><?php echo htmlspecialchars($msg); ?></textarea>
             </div>
         </div>
-        <script>document.getElementById('content-view').innerHTML = marked.parse(document.getElementById('raw-content').value);</script>
+        <script>
+            const raw = document.getElementById('raw-content').value;
+            const parsed = marked.parse(raw);
+            const clean = DOMPurify.sanitize(parsed);
+            document.getElementById('content-view').innerHTML = clean;
+        </script>
 
     <?php elseif ($isFile && !$showMsg): ?>
+        <!-- Password Input -->
         <div class="glass rounded-2xl p-10 max-w-sm mx-auto text-center relative shadow-xl">
             <div class="absolute top-4 right-4"><?php echo renderTools($L, $langCode); ?></div>
-            <div class="mb-4 inline-block"><i class="fas <?php echo $passReq?'fa-lock':'fa-shield-halved'; ?> text-5xl bg-clip-text text-transparent bg-gradient-to-br from-blue-500 to-cyan-500 pb-1"></i></div>
+            <div class="mb-4 inline-block"><i class="fas <?php echo $passReq?'fa-lock':'fa-shield-halved'; ?> text-5xl bg-clip-text text-transparent bg-gradient-to-br from-blue-500 to-cyan-500 pb-1 filter drop-shadow-sm"></i></div>
             <h2 class="text-xl font-bold mb-1"><?php echo $passReq ? $L['pass_req'] : $L['msg_view']; ?></h2>
             <p class="text-xs text-gray-500 mb-6"><?php echo sprintf($L['left'], $data['reads']); ?></p>
             <?php if($err) echo "<div class='text-red-500 text-[10px] mb-4 bg-red-50 dark:bg-red-900/30 py-1.5 rounded font-medium'>$err</div>"; ?>
-            <form method="post" action="?file=<?php echo $_GET['file']; ?>&code=<?php echo $_GET['code']; ?>&confirm=1">
+            <form method="post" action="?file=<?php echo urlencode(basename($_GET['file'])); ?>&code=<?php echo urlencode($_GET['code']); ?>&confirm=1">
+                <input type="hidden" name="csrf_token" value="<?php echo $_SESSION['csrf_token']; ?>">
                 <?php if($passReq): ?>
                     <input type="password" name="pass" class="glass-input w-full px-4 py-2.5 rounded-xl mb-4 text-center outline-none text-base tracking-widest" placeholder="••••••" required autofocus>
                 <?php endif; ?>
@@ -297,22 +426,34 @@ if ($isFile) {
     <?php else: ?>
         <!-- Create Screen -->
         <form method="post" enctype="multipart/form-data" class="grid grid-cols-1 lg:grid-cols-12 gap-4 w-full h-auto lg:h-[600px]">
-            <!-- Settings -->
+            <input type="hidden" name="csrf_token" value="<?php echo $_SESSION['csrf_token']; ?>">
+            
             <div class="lg:col-span-4 flex flex-col h-full">
                 <div class="glass rounded-2xl p-5 h-full flex flex-col shadow-lg">
+                    <!-- Brand Section -->
                     <div class="flex items-center gap-3 mb-5 shrink-0">
-                        <div class="w-10 h-10 bg-gradient-to-br from-blue-500 to-cyan-500 rounded-lg flex items-center justify-center text-white text-lg shadow-lg shadow-blue-500/30"><i class="fas fa-fire"></i></div>
-                        <div><h1 class="font-bold text-lg leading-tight"><?php echo $L['title']; ?></h1><p class="text-[10px] text-gray-400"><?php echo $L['subtitle']; ?></p></div>
+                        <i class="fas fa-fire-flame-curved fire-icon-glow"></i>
+                        <div><h1 class="font-bold text-lg leading-tight"><?php echo $L['app_title']; ?></h1><p class="text-[10px] text-gray-400"><?php echo $L['subtitle']; ?></p></div>
                     </div>
+                    
                     <div class="flex-1 overflow-y-auto pr-1 space-y-4 custom-scroll">
                         <div class="space-y-2">
                             <label class="text-[9px] font-bold text-gray-400 uppercase tracking-widest ml-1"><?php echo $L['sec_info']; ?></label>
-                            <input type="text" name="name" class="glass-input w-full px-3 py-2 rounded-lg text-xs transition-all" placeholder="<?php echo $L['nickname']; ?>">
-                            <input type="text" name="note" class="glass-input w-full px-3 py-2 rounded-lg text-xs transition-all" placeholder="<?php echo $L['note']; ?>">
+                            <div class="relative"><span class="absolute left-3 top-2 text-gray-400 text-xs"><i class="fas fa-user"></i></span><input type="text" name="name" class="glass-input w-full pl-8 pr-3 py-2 rounded-lg text-xs transition-all" placeholder="<?php echo $L['nickname']; ?>"></div>
+                            <div class="relative"><span class="absolute left-3 top-2 text-gray-400 text-xs"><i class="fas fa-tag"></i></span><input type="text" name="note" class="glass-input w-full pl-8 pr-3 py-2 rounded-lg text-xs transition-all" placeholder="<?php echo $L['note']; ?>"></div>
                         </div>
                         <div class="space-y-3">
                             <label class="text-[9px] font-bold text-gray-400 uppercase tracking-widest ml-1"><?php echo $L['sec_safe']; ?></label>
-                            <input type="password" name="pass" class="glass-input w-full px-3 py-2 rounded-lg text-xs transition-all" placeholder="<?php echo $L['pass_set']; ?>">
+                            
+                            <div class="relative group">
+                                <span class="absolute left-3 top-2 text-gray-400 text-xs"><i class="fas fa-lock"></i></span>
+                                <input type="password" id="passInput" name="pass" class="glass-input w-full pl-8 pr-16 py-2 rounded-lg text-xs transition-all font-mono" placeholder="<?php echo $L['pass_set']; ?>">
+                                <div class="absolute right-1 top-1 flex bg-white/50 dark:bg-black/20 rounded-md p-0.5">
+                                    <button type="button" onclick="genPass()" class="w-6 h-6 flex items-center justify-center text-gray-500 hover:text-blue-500 transition-colors" title="<?php echo $L['gen_pass_title']; ?>"><i class="fas fa-wand-magic-sparkles text-[10px]"></i></button>
+                                    <button type="button" onclick="togglePass()" class="w-6 h-6 flex items-center justify-center text-gray-500 hover:text-blue-500 transition-colors" title="<?php echo $L['toggle_pass']; ?>"><i class="fas fa-eye text-[10px]" id="eyeIcon"></i></button>
+                                </div>
+                            </div>
+
                             <div class="bg-white/30 dark:bg-black/10 rounded-lg p-2.5 border border-gray-100 dark:border-gray-700/50 space-y-2">
                                 <div>
                                     <div class="flex justify-between text-[10px] mb-1 px-1 font-medium text-gray-600 dark:text-gray-300"><span><?php echo $L['reads']; ?></span><span class="text-blue-500 bg-blue-50 dark:bg-blue-900/30 px-1 rounded"><?php echo sprintf($L['max_limit'], $maxReads); ?></span></div>
@@ -320,13 +461,16 @@ if ($isFile) {
                                 </div>
                                 <div>
                                     <div class="flex justify-between text-[10px] mb-1 px-1 font-medium text-gray-600 dark:text-gray-300"><span><?php echo $L['expiry']; ?></span><span class="text-gray-400"><?php echo sprintf($L['max_time'], $maxTimeStr); ?></span></div>
-                                    <div class="grid grid-cols-3 gap-1.5"><?php foreach(['d'=>$L['day'],'h'=>$L['hour'],'m'=>$L['min']] as $k=>$v): ?><div class="relative"><input type="number" name="<?php echo $k; ?>" placeholder="0" class="glass-input w-full py-1.5 pl-1.5 pr-4 text-center text-[10px] rounded font-mono"><span class="absolute right-1.5 top-1.5 text-[9px] text-gray-400 pointer-events-none"><?php echo $v; ?></span></div><?php endforeach; ?></div>
+                                    <div class="grid grid-cols-3 gap-1.5">
+                                        <div class="relative"><input type="number" name="d" value="7" class="glass-input w-full py-1.5 pl-1.5 pr-4 text-center text-[10px] rounded font-mono"><span class="absolute right-1.5 top-1.5 text-[9px] text-gray-400 pointer-events-none"><?php echo $L['day']; ?></span></div>
+                                        <div class="relative"><input type="number" name="h" placeholder="0" class="glass-input w-full py-1.5 pl-1.5 pr-4 text-center text-[10px] rounded font-mono"><span class="absolute right-1.5 top-1.5 text-[9px] text-gray-400 pointer-events-none"><?php echo $L['hour']; ?></span></div>
+                                        <div class="relative"><input type="number" name="m" placeholder="0" class="glass-input w-full py-1.5 pl-1.5 pr-4 text-center text-[10px] rounded font-mono"><span class="absolute right-1.5 top-1.5 text-[9px] text-gray-400 pointer-events-none"><?php echo $L['min']; ?></span></div>
+                                    </div>
                                 </div>
                             </div>
                         </div>
                         <div class="pt-1">
                             <label class="text-[9px] font-bold text-gray-400 uppercase tracking-widest ml-1 mb-1 block"><?php echo $L['upload_label']; ?></label>
-                            <!-- FIXED UPLOAD BUTTON -->
                             <div class="relative glass-input flex items-center gap-2 p-2 rounded-lg hover:bg-white/60 dark:hover:bg-black/40 transition-colors group">
                                 <div class="bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 p-1.5 rounded group-hover:scale-110 transition-transform"><i class="fas fa-paperclip text-xs"></i></div>
                                 <div id="fname" class="text-[10px] font-medium truncate opacity-70 flex-1"><?php echo $L['select_file']; ?></div>
@@ -364,9 +508,11 @@ if ($isFile) {
 </div>
 
 <!-- Footer -->
-<footer class="py-4 text-center text-[10px] text-white/80 font-medium flex items-center justify-center gap-2 drop-shadow-md">
-    <span>&copy; <?php echo date('Y'); ?> BurnRead Prince</span><span class="opacity-50">|</span>
-    <a href="<?php echo $githubUrl; ?>" target="_blank" class="hover:scale-110 transition opacity-80 hover:opacity-100"><svg height="14" width="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"></path></svg></a>
+<footer class="py-4 text-center text-[10px] text-white/90 font-medium flex items-center justify-center gap-2 drop-shadow-[0_1px_2px_rgba(0,0,0,0.5)] z-20">
+    <div class="px-3 py-1 bg-black/20 rounded-full backdrop-blur-sm flex items-center gap-2 border border-white/10">
+        <span>&copy; <?php echo date('Y'); ?> BurnRead Prince</span><span class="opacity-50">|</span>
+        <a href="<?php echo $githubUrl; ?>" target="_blank" class="hover:scale-110 transition opacity-90 hover:opacity-100 hover:text-blue-300"><svg height="14" width="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"></path></svg></a>
+    </div>
 </footer>
 
 <script>
@@ -379,9 +525,29 @@ if ($isFile) {
         const ed=document.getElementById('editor'), pr=document.getElementById('preview'), be=document.getElementById('btn-edit'), bp=document.getElementById('btn-prev');
         const act='bg-white dark:bg-gray-600 shadow-sm text-blue-600 dark:text-blue-300 font-bold', inact='text-gray-500 dark:text-gray-400 hover:text-gray-700';
         if(t==='edit') { ed.classList.remove('hidden'); pr.classList.add('hidden'); be.className='px-3 py-1 rounded text-[10px] transition-all '+act; bp.className='px-3 py-1 rounded text-[10px] transition-all '+inact; }
-        else { ed.classList.add('hidden'); pr.classList.remove('hidden'); pr.innerHTML=marked.parse(ed.value); bp.className='px-3 py-1 rounded text-[10px] transition-all '+act; be.className='px-3 py-1 rounded text-[10px] transition-all '+inact; }
+        else { ed.classList.add('hidden'); pr.classList.remove('hidden'); 
+            const clean = DOMPurify.sanitize(marked.parse(ed.value));
+            pr.innerHTML=clean; 
+            bp.className='px-3 py-1 rounded text-[10px] transition-all '+act; be.className='px-3 py-1 rounded text-[10px] transition-all '+inact; }
     }
+    
+    function genPass() {
+        const chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789";
+        let pass = "";
+        for(let i=0;i<12;i++) pass += chars.charAt(Math.floor(Math.random() * chars.length));
+        const el = document.getElementById('passInput');
+        el.type = 'text'; el.value = pass;
+        document.getElementById('eyeIcon').classList.replace('fa-eye', 'fa-eye-slash');
+    }
+    function togglePass() {
+        const el = document.getElementById('passInput');
+        const icon = document.getElementById('eyeIcon');
+        if (el.type === "password") { el.type = "text"; icon.classList.replace('fa-eye', 'fa-eye-slash'); }
+        else { el.type = "password"; icon.classList.replace('fa-eye-slash', 'fa-eye'); }
+    }
+
     document.getElementById('editor')?.addEventListener('keydown', function(e) { if (e.key == 'Tab') { e.preventDefault(); this.setRangeText("\t", this.selectionStart, this.selectionStart, "end"); } });
 </script>
+
 </body>
 </html>
