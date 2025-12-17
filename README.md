@@ -45,7 +45,7 @@ The `.env` file controls the security, limits, and appearance of your instance.
 | `SITE_DOMAIN` | Your installation URL (e.g., `https://secret.example.com`). **No trailing slash.** |
 | `SITE_ICON` | URL to the favicon or logo. |
 | `SITE_BACKGROUND` | URL to the background image. |
-| `DEFAULT_LANG` | Default language: `en` (English) or `cn` (Chinese). |
+| `DEFAULT_LANG` | Default language: `cn` (Chinese) or `en` (English). |
 | `DEFAULT_THEME` | Default UI theme: `light`, `dark`, or `auto` (system preference). |
 
 ### 3. Usage Limits
