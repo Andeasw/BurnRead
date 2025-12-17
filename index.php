@@ -4,7 +4,6 @@
  * By Prince 2025.12
  * https://github.com/Andeasw/BurnRead
  */
-
 // --- 0. Init & Security ---
 session_start();
 if (empty($_SESSION['csrf_token'])) $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
