@@ -1,107 +1,249 @@
 # 🔥 BurnRead
 
-A lightweight, secure, and self-destructing message system built with PHP.
+A lightweight, secure, self-destructing message and file sharing system built with PHP.
 
-**BurnRead** allows you to share confidential notes and files via a link that automatically destroys itself after being viewed or expiring.
+**BurnRead** allows you to share confidential notes and files via a one-time link that automatically destroys itself after being viewed or expired.
 
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 ![PHP](https://img.shields.io/badge/php-7.4%2B-purple.svg)
 
+---
+
 ## ✨ Features
 
-*   **Zero Database**: Uses flat JSON files for storage.
-*   **Strong Encryption**: **AES-256-GCM** authenticated encryption for messages and files.
-*   **Burn After Reading**: Links are destroyed after a specific number of views.
-*   **Time Expiration**: Links expire automatically after a set duration.
-*   **File Attachments**: Securely upload encrypted files.
-*   **Password Protection**: Optional password or simple link access.
-*   **Modern UI**: Responsive Glassmorphism design with Dark/Light mode.
-*   **Easy Setup**: Single file deployment.
+* **Zero Database**
+  Flat-file storage using encrypted JSON files.
 
-## 🚀 Installation
+* **Strong Encryption**
+  AES-256-GCM authenticated encryption with per-message random keys.
 
-1.  **Upload**: Copy the script (e.g., `index.php` or `secret.php`) to your web server.
-2.  **Permissions**: Ensure the directory is writable by the web server (chmod `755` or `777`).
-    *   *The script will automatically create `burnread_data/`, `burnread_uploads/`, `burnread_logs/`, and `.htaccess`.*
-3.  **Run**: Visit the URL in your browser.
-    *   *The system will automatically generate a secure `.burnread.env` file.*
-4.  **Configure**: Edit the `.burnread.env` file to customize your settings.
+* **Burn-After-Reading**
+  Messages are destroyed after a defined number of successful views.
 
-## ⚙️ Configuration (.burnread.env)
+* **Time Expiration**
+  Automatic expiration after a maximum lifetime.
 
-The `.burnread.env` file controls the security, limits, and appearance of your instance.
+* **Encrypted File Attachments**
+  Files are encrypted at rest and destroyed together with the message.
 
-### 1. Security & Logging
+* **Password or Link Access**
+  Optional password protection or secure random link access.
 
-| Option | Description |
-| :--- | :--- |
-| `ENCRYPTION_KEY` | **Required.** 64-char hex string generated automatically. **Do not change** after deployment or data will be lost. |
-| `ENABLE_LOGGING` | Set to `true` to enable daily access logs. Default: `false`. |
-| `LOG_MAX_DAYS` | Number of days to keep logs. Default: `365`. |
-| `LOG_MAX_SIZE` | Max size of a single day's log file in MB. Default: `30`. |
+* **Modern UI**
+  Responsive Glassmorphism UI with Dark / Light / Auto themes.
 
-### 2. Site Appearance
-
-| Option | Description |
-| :--- | :--- |
-| `SITE_NAME` | The title of your website (e.g., "My Secure Notes"). |
-| `SITE_DOMAIN` | Your installation URL (e.g., `https://secret.example.com`). **No trailing slash.** |
-| `SITE_ICON` | URL to the favicon or logo. |
-| `SITE_BACKGROUND` | URL to the background image. |
-| `DEFAULT_LANG` | Default language: `cn` (Chinese) or `en` (English). |
-| `DEFAULT_THEME` | Default UI theme: `light`, `dark`, or `auto` (system preference). |
-
-### 3. Usage Limits
-
-| Option | Description | Default |
-| :--- | :--- | :--- |
-| `MAX_READ_LIMIT` | Maximum number of views allowed per message. | `10` |
-| `MAX_EXPIRY_DAYS` | Absolute maximum lifespan (in days) for any message. | `30` |
-| `MAX_DELAY_DAYS` | Maximum "Delay Start" (in days) a user can set. | `30` |
-
-### 4. File Attachments
-
-| Option | Description | Format |
-| :--- | :--- | :--- |
-| `UPLOAD_MAX_MB` | Max allowed file size in MB. | Integer (e.g., `5`) |
-| `UPLOAD_TYPES` | Allowed file extensions (comma-separated). | `jpg,zip,pdf...` |
-
-### 5. System
-
-| Option | Description |
-| :--- | :--- |
-| `TIMEZONE` | PHP Timezone (e.g., `Asia/Shanghai`, `UTC`). |
+* **Single-File Deployment**
+  No framework, no database, no background services required.
 
 ---
 
-## 📝 Example .burnread.env
+## 🚀 Installation
+
+1. **Upload**
+
+   * Upload the PHP script (e.g. `index.php`) to your web root.
+
+2. **Permissions**
+
+   * Ensure the directory is writable by PHP:
+
+     ```bash
+     chmod 755 .
+     ```
+   * The script will automatically create:
+
+     ```
+     burnread_data/
+     burnread_uploads/
+     burnread_logs/
+     .burnread.env
+     ```
+
+3. **Run**
+
+   * Visit the script URL in your browser.
+   * A secure `.burnread.env` file will be generated automatically.
+
+4. **Configure**
+
+   * Edit `.burnread.env` to customize limits, appearance, and logging.
+
+---
+
+## ⚙️ Configuration (`.burnread.env`)
+
+### 1. Security & Logging
+
+| Option           | Description                                                                                                              |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `ENCRYPTION_KEY` | **Required.** Auto-generated 64-char hex key. **Do not change after deployment** or existing data becomes unrecoverable. |
+| `ENABLE_LOGGING` | Enable access logs (`true` / `false`).                                                                                   |
+| `LOG_MAX_DAYS`   | Days to retain log files.                                                                                                |
+| `LOG_MAX_SIZE`   | Max size per log file (MB).                                                                                              |
+
+---
+
+### 2. Site Appearance
+
+| Option            | Description                               |
+| ----------------- | ----------------------------------------- |
+| `SITE_NAME`       | Website title.                            |
+| `SITE_DOMAIN`     | Full site URL **without trailing slash**. |
+| `SITE_ICON`       | Favicon URL.                              |
+| `SITE_BACKGROUND` | Background image URL.                     |
+| `DEFAULT_LANG`    | `cn` or `en`.                             |
+| `DEFAULT_THEME`   | `light`, `dark`, or `auto`.               |
+
+---
+
+### 3. Usage Limits
+
+| Option            | Description                  | Default |
+| ----------------- | ---------------------------- | ------- |
+| `MAX_READ_LIMIT`  | Max views per message        | `10`    |
+| `MAX_EXPIRY_DAYS` | Absolute max lifetime (days) | `30`    |
+| `MAX_DELAY_DAYS`  | Max delay before activation  | `30`    |
+
+---
+
+### 4. File Attachments
+
+| Option          | Description                          |
+| --------------- | ------------------------------------ |
+| `UPLOAD_MAX_MB` | Max file size in MB                  |
+| `UPLOAD_TYPES`  | Allowed extensions (comma-separated) |
+
+---
+
+### 5. System
+
+| Option     | Description                                |
+| ---------- | ------------------------------------------ |
+| `TIMEZONE` | PHP timezone (e.g. `UTC`, `Asia/Shanghai`) |
+
+---
+
+## 📝 Example `.burnread.env`
 
 ```ini
-ENCRYPTION_KEY="<Auto-generated-do-not-change>"
+ENCRYPTION_KEY="<auto-generated-do-not-change>"
 ENABLE_LOGGING="false"
 LOG_MAX_DAYS="365"
 LOG_MAX_SIZE="30"
+
 SITE_NAME="BurnRead"
 SITE_DOMAIN="https://read.example.com"
 SITE_ICON="https://example.com/favicon.png"
 SITE_BACKGROUND="https://t.alcy.cc/moez"
+
 DEFAULT_LANG="en"
 DEFAULT_THEME="dark"
 TIMEZONE="UTC"
+
 MAX_READ_LIMIT="5"
 MAX_EXPIRY_DAYS="7"
 MAX_DELAY_DAYS="1"
+
 UPLOAD_MAX_MB="20"
 UPLOAD_TYPES="png,jpg,jpeg,gif,zip,rar,7z,pdf,txt,doc,docx"
 ```
 
-## ⚠️ Requirements
+---
 
-*   **PHP 7.4+** (PHP 8.0+ Recommended)
-*   **OpenSSL** Extension
-*   **Fileinfo** Extension
-*   **HTTPS** (Required for secure key transmission)
+## ⚠️ Important Security Notes
+
+### 🔐 Security Model (Read This)
+
+BurnRead provides **strong encryption at rest** and **controlled access**, but it is **not magic**.
+
+* If an attacker gains **server access + source code + `.burnread.env`**, stored data can be decrypted.
+* This is true for **any** system without HSM / KMS / client-side encryption.
+
+BurnRead is designed for:
+
+* Secure one-time sharing
+* Reducing exposure window
+* Preventing accidental disclosure
+
+It is **not** intended as:
+
+* A replacement for full zero-knowledge systems
+* Protection against a fully compromised server
+
+---
+
+### 🔑 Do NOT Change `ENCRYPTION_KEY`
+
+Changing `ENCRYPTION_KEY` after deployment will make **all existing messages permanently unreadable**.
+
+---
+
+## 🌐 Web Server Notes (Very Important)
+
+### ✅ Apache (Default)
+
+* `.htaccess` is created automatically.
+* No additional configuration required.
+
+---
+
+### ⚠️ Nginx / Caddy / Non-Apache Servers
+
+`.htaccess` **does not work** on Nginx or other servers.
+
+You **must** block access manually.
+
+### 🔧 Recommended Nginx Configuration
+
+```nginx
+location ~ /\.(burnread\.env)$ {
+    deny all;
+}
+
+location ~* /(burnread_data|burnread_uploads|burnread_logs)/ {
+    deny all;
+}
+```
+
+> ⚠️ Without this, sensitive files **may be publicly accessible**.
+
+---
+
+### 🧩 Shared / Restricted Hosting
+
+* No database required ✔
+* No cron required ✔
+* No Composer required ✔
+* Only standard PHP extensions needed ✔
+
+However:
+
+* Ensure PHP has **write permission** to the script directory.
+* Some hosts disable `file_get_contents()` for URLs (does not affect core features).
+
+---
+
+## 🔒 Requirements
+
+* **PHP 7.4+** (PHP 8.x recommended)
+* **OpenSSL** extension
+* **Fileinfo** extension
+* **HTTPS** (strongly recommended)
+
+---
 
 ## 📄 License
 
-This project is licensed under the [MIT License](LICENSE).
+This project is licensed under the **MIT License**.
+
+---
+
+## 🧠 Final Notes
+
+> BurnRead focuses on **practical security**, not theoretical absolutes.
+> Its strength comes from **simplicity, short data lifetime, and strong cryptography**,
+> not from pretending the server is invulnerable.
+
+If you understand this trade-off, BurnRead is a **safe, stable, and production-ready solution**.
+
+---
