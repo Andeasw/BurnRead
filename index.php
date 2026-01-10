@@ -15,7 +15,6 @@ if (empty($_SESSION['csrf_token'])) $_SESSION['csrf_token'] = bin2hex(random_byt
 
 $selfUrl = basename($_SERVER['PHP_SELF']);
 
-// --- Garbage Collection & Logging Check (1% Chance) ---
 function gc_cleanup() {
     global $env;
     if (mt_rand(1, 100) !== 1) return;
@@ -30,7 +29,6 @@ function gc_cleanup() {
     $cleanup_files('burnread_data');
     $cleanup_files('burnread_uploads');
 
-    // Log Rotation
     $logDir = __DIR__ . '/burnread_logs';
     if (is_dir($logDir)) {
         $maxDays = intval($env['LOG_MAX_DAYS'] ?? 365);
@@ -41,7 +39,6 @@ function gc_cleanup() {
     }
 }
 
-// --- Init Directories ---
 function secure_path($path) {
     if (!is_dir($path)) mkdir($path, 0755, true);
     if (!file_exists($path . '/index.php')) file_put_contents($path . '/index.php', '<?php header("HTTP/1.0 404 Not Found"); exit;');
@@ -57,7 +54,6 @@ if (!file_exists($rootHtaccess) || strpos(file_get_contents($rootHtaccess), '.bu
     file_put_contents($rootHtaccess, $rules, FILE_APPEND);
 }
 
-// --- Environment ---
 $envPath = __DIR__ . '/.burnread.env';
 if (!file_exists($envPath)) {
     $proto = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on') ? "https" : "http";
@@ -117,7 +113,6 @@ $maxDelay = intval($env['MAX_DELAY_DAYS'] ?? 30);
 $uploadMaxMB = intval($env['UPLOAD_MAX_MB'] ?? 5);
 $allowedExts = explode(',', $env['UPLOAD_TYPES'] ?? 'png,jpg,zip,txt');
 
-// --- Helper Functions ---
 function app_log($action, $info = '') {
     global $env;
     if (($env['ENABLE_LOGGING'] ?? 'false') !== 'true') return;
@@ -125,7 +120,6 @@ function app_log($action, $info = '') {
     $logDir = __DIR__ . '/burnread_logs';
     $logFile = $logDir . '/' . date('Y-m-d') . '.log';
     
-    // Check Max Size (MB to Bytes)
     $maxSize = intval($env['LOG_MAX_SIZE'] ?? 30) * 1048576;
     if (file_exists($logFile) && filesize($logFile) > $maxSize) return;
 
@@ -213,7 +207,6 @@ $i18n = [
 ];
 $L = $i18n[$langCode];
 
-// --- Logic ---
 $isPost = $_SERVER['REQUEST_METHOD'] === 'POST';
 $reqFile = $_GET['file'] ?? '';
 $isFile = !empty($reqFile) && isset($_GET['code']);
@@ -221,7 +214,6 @@ $viewState = 'create';
 $name = ''; $note = ''; $msg = ''; $fileName = '';
 $waitSecs = 0;
 
-// Create
 if ($isPost && !$isFile) {
     if (!hash_equals($_SESSION['csrf_token'], $_POST['csrf_token'] ?? '')) die($L['err_csrf']);
     if (strlen($_POST['message']??'') > 200000 || strlen($_POST['name']??'') > 64 || strlen($_POST['note']??'') > 128) die($L['err_len']);
@@ -277,7 +269,6 @@ if ($isPost && !$isFile) {
     }
 }
 
-// Read
 if ($isFile) {
     ignore_user_abort(true);
     
@@ -366,7 +357,13 @@ if ($isFile) {
                     if (($viewState === 'view' || $viewState === 'downloaded') && !$shouldBurn) {
                         $data['reads']--;
                         if ($data['reads'] <= 0) {
-                            $shouldBurn = true;
+                            $hasFile = !empty($data['file_path']) && file_exists($data['file_path']);
+                            if ($viewState === 'view' && $hasFile) {
+                                ftruncate($fp, 0); rewind($fp);
+                                fwrite($fp, json_encode($data, JSON_UNESCAPED_SLASHES|JSON_UNESCAPED_UNICODE));
+                            } else {
+                                $shouldBurn = true;
+                            }
                         } else {
                             ftruncate($fp, 0); rewind($fp);
                             fwrite($fp, json_encode($data, JSON_UNESCAPED_SLASHES|JSON_UNESCAPED_UNICODE));
