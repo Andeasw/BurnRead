@@ -61,7 +61,7 @@ secure_path('burnread_data');
 secure_path('burnread_uploads');
 secure_path('burnread_logs');
 
-// Fix: Robust .htaccess Check
+// Robust .htaccess Check
 $rootHtaccess = __DIR__ . '/.htaccess';
 $htContent = file_exists($rootHtaccess) ? file_get_contents($rootHtaccess) : '';
 if (strpos($htContent, 'BurnRead-Protection') === false) {
