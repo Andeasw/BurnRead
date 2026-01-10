@@ -189,7 +189,7 @@ $i18n = [
         'destroyed' => '已销毁', 'day' => '天', 'hour' => '时', 'min' => '分',
         'err_empty' => '内容不能为空', 'err_pass' => '密码错误或信息已失效', 'err_csrf' => '会话过期，请刷新',
         'sec_info' => '基础信息', 'sec_safe' => '安全控制',
-        'upload_label' => '加密附件', 'upload_hint' => '最大 %sMB, 支持: %s',
+        'upload_label' => '加密附件', 'upload_hint' => '最大 %sMB, 允许: %s',
         'download' => '下载附件', 'err_upload' => '文件类型不合规或伪装文件', 'max_limit' => '上限: %s次', 
         'max_time' => '最长: '.$maxExp.'天', 'max_delay' => '最长: '.$maxDelay.'天',
         'file_ready' => '包含加密附件', 'select_file' => '选择文件...',
