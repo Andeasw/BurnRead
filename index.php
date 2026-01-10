@@ -4,26 +4,61 @@
  * By Prince 2025.12
  * https://github.com/Andeasw/BurnRead
  */
-// --- 0. Init & Security ---
+
+header("X-Frame-Options: SAMEORIGIN");
+header("X-Content-Type-Options: nosniff");
+header("X-Robots-Tag: noindex, noarchive, nofollow");
+header("Referrer-Policy: strict-origin-when-cross-origin");
+
 session_start();
 if (empty($_SESSION['csrf_token'])) $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
 
+$selfUrl = basename($_SERVER['PHP_SELF']);
+
+// --- Garbage Collection & Logging Check (1% Chance) ---
+function gc_cleanup() {
+    global $env;
+    if (mt_rand(1, 100) !== 1) return;
+
+    $cleanup_files = function($dir) {
+        if (!is_dir($dir)) return;
+        $now = time();
+        foreach (glob($dir . '/*.{json,dat}', GLOB_BRACE) as $f) {
+            if ($now - filemtime($f) > 2592000) @unlink($f); 
+        }
+    };
+    $cleanup_files('burnread_data');
+    $cleanup_files('burnread_uploads');
+
+    // Log Rotation
+    $logDir = __DIR__ . '/burnread_logs';
+    if (is_dir($logDir)) {
+        $maxDays = intval($env['LOG_MAX_DAYS'] ?? 365);
+        $now = time();
+        foreach (glob($logDir . '/*.log') as $f) {
+            if ($now - filemtime($f) > $maxDays * 86400) @unlink($f);
+        }
+    }
+}
+
+// --- Init Directories ---
 function secure_path($path) {
     if (!is_dir($path)) mkdir($path, 0755, true);
     if (!file_exists($path . '/index.php')) file_put_contents($path . '/index.php', '<?php header("HTTP/1.0 404 Not Found"); exit;');
     if (!file_exists($path . '/.htaccess')) file_put_contents($path . '/.htaccess', "Deny from all");
 }
-secure_path('messages');
-secure_path('uploads');
+secure_path('burnread_data');
+secure_path('burnread_uploads');
+secure_path('burnread_logs');
 
 $rootHtaccess = __DIR__ . '/.htaccess';
-if (!file_exists($rootHtaccess) || strpos(file_get_contents($rootHtaccess), '.env') === false) {
-    $rules = "\n<FilesMatch \"^(\\.env|.*\\.log)$\">\nRequire all denied\n</FilesMatch>\n";
+if (!file_exists($rootHtaccess) || strpos(file_get_contents($rootHtaccess), '.burnread.env') === false) {
+    $rules = "\n<FilesMatch \"^(\\.burnread\\.env|.*\\.log)$\">\nRequire all denied\n</FilesMatch>\n";
     file_put_contents($rootHtaccess, $rules, FILE_APPEND);
 }
 
-// --- 1. Environment ---
-$envPath = __DIR__ . '/.env';
+// --- Environment ---
+$envPath = __DIR__ . '/.burnread.env';
 if (!file_exists($envPath)) {
     $proto = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on') ? "https" : "http";
     $port = $_SERVER['SERVER_PORT'];
@@ -34,6 +69,8 @@ if (!file_exists($envPath)) {
     $defEnv = implode("\n", [
         "ENCRYPTION_KEY=\"$autoKey\"",
         "ENABLE_LOGGING=\"false\"",
+        "LOG_MAX_DAYS=\"365\"",
+        "LOG_MAX_SIZE=\"30\"", 
         "SITE_NAME=\"BurnRead\"",
         "SITE_ICON=\"https://cdn-icons-png.flaticon.com/512/2913/2913520.png\"",
         "SITE_DOMAIN=\"$autoDomain\"",
@@ -45,21 +82,23 @@ if (!file_exists($envPath)) {
         "MAX_EXPIRY_DAYS=\"30\"",
         "MAX_DELAY_DAYS=\"30\"",
         "UPLOAD_MAX_MB=\"5\"",
-        "UPLOAD_TYPES=\"png,jpg,gif,webp,ico,zip,rar,7z,pdf,txt,doc,docx\""
+        "UPLOAD_TYPES=\"png,jpg,gif,webp,ico,zip,rar,7z,pdf,txt,doc,docx,xls,xlsx,ppt,pptx\""
     ]);
     file_put_contents($envPath, $defEnv);
+    chmod($envPath, 0600);
 }
-if (basename($_SERVER['PHP_SELF']) === '.env') { header("HTTP/1.0 403 Forbidden"); die("Access Denied"); }
+if (basename($_SERVER['PHP_SELF']) === '.burnread.env') { header("HTTP/1.0 403 Forbidden"); die("Access Denied"); }
 
 function loadEnv($path) {
     if (!file_exists($path)) return [];
     $env = [];
-    foreach (file($path, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $line) {
+    $lines = file($path, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+    foreach ($lines as $line) {
         $line = trim($line);
-        if ($line === '' || strpos($line, '#') === 0) continue;
+        if ($line === '' || $line[0] === '#') continue;
         if (strpos($line, '=') !== false) {
             list($k, $v) = explode('=', $line, 2);
-            $env[trim($k)] = trim(trim($v), '"\'');
+            $env[trim($k)] = trim(trim($v), "\"'");
         }
     }
     return $env;
@@ -68,6 +107,7 @@ function loadEnv($path) {
 $env = loadEnv($envPath);
 if (empty($env['ENCRYPTION_KEY'])) die("Config Error: Missing Key");
 date_default_timezone_set($env['TIMEZONE'] ?? 'Asia/Shanghai');
+gc_cleanup();
 
 $serverKey = $env['ENCRYPTION_KEY'];
 $domain = rtrim($env['SITE_DOMAIN'] ?? '', '/');
@@ -77,48 +117,48 @@ $maxDelay = intval($env['MAX_DELAY_DAYS'] ?? 30);
 $uploadMaxMB = intval($env['UPLOAD_MAX_MB'] ?? 5);
 $allowedExts = explode(',', $env['UPLOAD_TYPES'] ?? 'png,jpg,zip,txt');
 
-// --- 2. Logic Helpers ---
+// --- Helper Functions ---
 function app_log($action, $info = '') {
     global $env;
     if (($env['ENABLE_LOGGING'] ?? 'false') !== 'true') return;
-    $logFile = __DIR__ . '/access.log';
-    $entry = sprintf("[%s] IP:%s | ACT:%s | %s\n", date('Y-m-d H:i:s'), $_SERVER['REMOTE_ADDR'], $action, $info);
+    
+    $logDir = __DIR__ . '/burnread_logs';
+    $logFile = $logDir . '/' . date('Y-m-d') . '.log';
+    
+    // Check Max Size (MB to Bytes)
+    $maxSize = intval($env['LOG_MAX_SIZE'] ?? 30) * 1048576;
+    if (file_exists($logFile) && filesize($logFile) > $maxSize) return;
+
+    $ua = $_SERVER['HTTP_USER_AGENT'] ?? 'Unknown';
+    $entry = sprintf("[%s] IP:%s | ACT:%s | %s | UA:%s\n", date('Y-m-d H:i:s'), $_SERVER['REMOTE_ADDR'], $action, $info, $ua);
     file_put_contents($logFile, $entry, FILE_APPEND | LOCK_EX);
 }
 
-function encrypt_data($plaintext, $key) { 
-    global $serverKey; 
-    $encKey = hash_hkdf('sha256', $key, 32, 'enc', $serverKey);
-    $macKey = hash_hkdf('sha256', $key, 32, 'mac', $serverKey);
-    $iv = random_bytes(16);
-    $ciphertext = openssl_encrypt($plaintext, 'aes-256-cbc', $encKey, 0, $iv); 
+function encrypt_data($plaintext, $key) {
+    global $serverKey;
+    $derivedKey = hash_hkdf('sha256', $key, 32, 'aes-gcm', $serverKey);
+    $iv = random_bytes(12); 
+    $tag = "";
+    $ciphertext = openssl_encrypt($plaintext, 'aes-256-gcm', $derivedKey, OPENSSL_RAW_DATA, $iv, $tag);
     if ($ciphertext === false) return false;
-    $mac = hash_hmac('sha256', $iv . $ciphertext, $macKey, true); 
-    return base64_encode($iv . $mac . $ciphertext); 
+    return base64_encode($iv . $tag . $ciphertext);
 }
 
-function decrypt_data($payload, $key) { 
-    global $serverKey; 
-    $decoded = base64_decode($payload); 
-    if (strlen($decoded) < 48) return false;
-    $iv = substr($decoded, 0, 16); 
-    $mac = substr($decoded, 16, 32); 
-    $ciphertext = substr($decoded, 48); 
-    $encKey = hash_hkdf('sha256', $key, 32, 'enc', $serverKey);
-    $macKey = hash_hkdf('sha256', $key, 32, 'mac', $serverKey);
-    if (!hash_equals($mac, hash_hmac('sha256', $iv . $ciphertext, $macKey, true))) return false; 
-    return openssl_decrypt($ciphertext, 'aes-256-cbc', $encKey, 0, $iv); 
+function decrypt_data($payload, $key) {
+    global $serverKey;
+    $decoded = base64_decode($payload, true);
+    if ($decoded === false || strlen($decoded) < 28) return false;
+    
+    $iv = substr($decoded, 0, 12);
+    $tag = substr($decoded, 12, 16);
+    $ciphertext = substr($decoded, 28);
+    $derivedKey = hash_hkdf('sha256', $key, 32, 'aes-gcm', $serverKey);
+    
+    return openssl_decrypt($ciphertext, 'aes-256-gcm', $derivedKey, OPENSSL_RAW_DATA, $iv, $tag);
 }
 
-function derive_key($pass, $salt) { return hash_pbkdf2('sha256', $pass, $salt, 100000, 32, true); }
-
-function atomic_write($path, $data) {
-    $tmp = tempnam(dirname($path), 'tmp_');
-    if (file_put_contents($tmp, $data) !== false) {
-        if (rename($tmp, $path)) { @chmod($path, 0644); return true; }
-        unlink($tmp);
-    }
-    return false;
+function derive_key($pass, $salt) { 
+    return hash_pbkdf2('sha256', $pass, $salt, 100000, 32, true); 
 }
 
 $langInput = $_GET['lang'] ?? $_COOKIE['site_lang'] ?? $env['DEFAULT_LANG'] ?? 'cn';
@@ -145,7 +185,7 @@ $i18n = [
         'file_ready' => '包含加密附件', 'select_file' => '选择文件...',
         'gen_pass' => '随机密码', 'toggle_pass' => '显隐',
         'tip_max' => '拉满', 'tip_min' => '最小', 'tip_reset' => '归零',
-        'wait_msg' => '锁定中', 'wait_desc' => '距离开放还有 %s',
+        'wait_msg' => '锁定中', 'wait_desc' => '距离开放还有',
         'err_len' => '内容超出长度限制', 'err_sys' => '系统错误'
     ],
     'en' => [
@@ -167,27 +207,21 @@ $i18n = [
         'file_ready' => 'File Attached', 'select_file' => 'Select File...',
         'gen_pass' => 'Random', 'toggle_pass' => 'Show',
         'tip_max' => 'Max', 'tip_min' => 'Min', 'tip_reset' => 'Reset',
-        'wait_msg' => 'Locked', 'wait_desc' => 'Available in %s',
+        'wait_msg' => 'Locked', 'wait_desc' => 'Available in',
         'err_len' => 'Input too long', 'err_sys' => 'System Error'
     ]
 ];
 $L = $i18n[$langCode];
 
-$mimeWhitelist = [
-    'jpg'=>'image/jpeg', 'jpeg'=>'image/jpeg', 'png'=>'image/png', 'gif'=>'image/gif', 'webp'=>'image/webp', 'ico'=>'image/x-icon',
-    'txt'=>'text/plain', 'pdf'=>'application/pdf',
-    'zip'=>'application/zip', 'rar'=>'application/x-rar-compressed', '7z'=>'application/x-7z-compressed',
-    'doc'=>'application/msword', 'docx'=>'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-];
-
-// --- 3. Logic Flow ---
+// --- Logic ---
 $isPost = $_SERVER['REQUEST_METHOD'] === 'POST';
 $reqFile = $_GET['file'] ?? '';
 $isFile = !empty($reqFile) && isset($_GET['code']);
 $viewState = 'create';
 $name = ''; $note = ''; $msg = ''; $fileName = '';
+$waitSecs = 0;
 
-// --- Create ---
+// Create
 if ($isPost && !$isFile) {
     if (!hash_equals($_SESSION['csrf_token'], $_POST['csrf_token'] ?? '')) die($L['err_csrf']);
     if (strlen($_POST['message']??'') > 200000 || strlen($_POST['name']??'') > 64 || strlen($_POST['note']??'') > 128) die($L['err_len']);
@@ -200,25 +234,16 @@ if ($isPost && !$isFile) {
     
     $encPaths = null; $encName = null;
     if (!empty($_FILES['file']['name'])) {
-        $f = $_FILES['file']; 
+        $f = $_FILES['file'];
         $ext = strtolower(pathinfo($f['name'], PATHINFO_EXTENSION));
-        $finfo = finfo_open(FILEINFO_MIME_TYPE); 
-        $realMime = finfo_file($finfo, $f['tmp_name']); 
-        finfo_close($finfo);
+        if ($f['size'] > $uploadMaxMB*1048576 || !in_array($ext, $allowedExts)) die($L['err_upload']);
         
-        $isMimeValid = ($mimeWhitelist[$ext] ?? '') === $realMime;
-        if (!$isMimeValid) {
-            if ($ext === 'rar' || $ext === '7z' || $ext === 'ico') $isMimeValid = true;
-            if (($ext === 'docx' || $ext === 'zip') && (strpos($realMime, 'zip')!==false || strpos($realMime, 'office')!==false)) $isMimeValid = true;
-        }
-        if ($f['size'] > $uploadMaxMB*1048576 || !in_array($ext, $allowedExts) || !$isMimeValid) die($L['err_upload']);
-        
-        $encFileName = 'uploads/'.bin2hex(random_bytes(32)).'.dat';
+        $encFileName = 'burnread_uploads/'.bin2hex(random_bytes(32)).'.dat';
         file_put_contents($encFileName, encrypt_data(file_get_contents($f['tmp_name']), $masterKey));
         $encPaths = $encFileName; 
         $encName = encrypt_data($f['name'], $masterKey);
     }
-
+    
     $userPass = $_POST['pass'] ?? '';
     $wrappingKey = (!empty($userPass)) ? derive_key($userPass, $salt) : derive_key($verifyCode, $salt);
     
@@ -227,7 +252,7 @@ if ($isPost && !$isFile) {
     $delayS = min((intval($_POST['dd']??0)*86400) + (intval($_POST['dh']??0)*3600) + (intval($_POST['dm']??0)*60), $maxDelay*86400);
     
     $fileId = bin2hex(random_bytes(32)); 
-    $fname = 'messages/' . $fileId . '.json';
+    $fname = 'burnread_data/' . $fileId . '.json';
     $data = [
         'file_id' => $fileId,
         'msg' => encrypt_data($content, $masterKey),
@@ -242,49 +267,49 @@ if ($isPost && !$isFile) {
         'reads' => min(max(intval($_POST['limit']??1), 1), $maxReads)
     ];
     
-    if (atomic_write($fname, json_encode($data, JSON_UNESCAPED_SLASHES|JSON_UNESCAPED_UNICODE))) {
+    if (file_put_contents($fname, json_encode($data, JSON_UNESCAPED_SLASHES|JSON_UNESCAPED_UNICODE))) {
         app_log('CREATE', "FileID: $fileId");
         $viewState = 'success';
         $limit = $data['reads'];
-        $link = $domain . rtrim(dirname($_SERVER['PHP_SELF']), '/\\') . "/?file=" . urlencode($fileId . '.json') . "&code=" . urlencode($verifyCode);
+        $link = $domain . rtrim(dirname($_SERVER['PHP_SELF']), '/\\') . "/$selfUrl?file=" . urlencode($fileId . '.json') . "&code=" . urlencode($verifyCode);
     } else {
         die($L['err_sys']);
     }
 }
 
-// --- Read/Download ---
+// Read
 if ($isFile) {
+    ignore_user_abort(true);
+    
     if (!preg_match('/^[a-f0-9]{64}\.json$/', $reqFile) || !preg_match('/^[a-f0-9]{64}$/', $_GET['code'])) {
         header("HTTP/1.0 400 Bad Request"); die("Invalid Request");
     }
-    $file = "messages/" . $reqFile;
-
-    if (!file_exists($file)) { 
-        $viewState = 'error'; 
+    
+    $file = "burnread_data/" . $reqFile;
+    
+    if (!file_exists($file)) {
+        $viewState = 'error';
         app_log('404', "File: $reqFile");
     } else {
         $fp = fopen($file, 'r+');
-        if (flock($fp, LOCK_EX)) { 
-            $data = json_decode(stream_get_contents($fp), true);
+        if ($fp && flock($fp, LOCK_EX)) {
+            $raw = stream_get_contents($fp);
+            $data = json_decode($raw, true);
+            $now = time();
+            $shouldBurn = false;
             
-            // Logic Fix: Prevent burn on initial load if not downloading
-            if (!is_array($data) || !isset($data['master_key_enc']) || (time() - $data['time'] > $data['exp'])) {
-                if(isset($data['file_path']) && file_exists($data['file_path'])) unlink($data['file_path']);
-                ftruncate($fp, 0); unlink($file); 
-                $viewState = 'error';
-                app_log('EXPIRED', "FileID: $reqFile");
+            if (!is_array($data) || !isset($data['master_key_enc']) || ($now - $data['time'] > $data['exp'])) {
+                $shouldBurn = true; $viewState = 'error'; app_log('EXPIRED', "FileID: $reqFile");
             } 
             elseif ($data['reads'] <= 0 && !isset($_GET['download'])) {
-                if(isset($data['file_path']) && file_exists($data['file_path'])) unlink($data['file_path']);
-                ftruncate($fp, 0); unlink($file);
-                $viewState = 'error';
-                app_log('BURNED_ENTRY', "FileID: $reqFile");
+                $shouldBurn = true; $viewState = 'error'; app_log('BURNED_ENTRY', "FileID: $reqFile");
             }
-            elseif (isset($data['file_id']) && $data['file_id'] !== str_replace('.json', '', $reqFile)) { $viewState = 'error'; }
-            elseif (time() < $data['avail']) {
+            elseif (isset($data['file_id']) && $data['file_id'] !== str_replace('.json', '', $reqFile)) {
+                $shouldBurn = true; $viewState = 'error';
+            }
+            elseif ($now < $data['avail']) {
                 $viewState = 'wait';
-                $diff = $data['avail'] - time();
-                $waitStr = floor($diff/86400)."d ".floor(($diff%86400)/3600)."h ".floor(($diff%3600)/60)."m";
+                $waitSecs = $data['avail'] - $now;
             }
             else {
                 $passReq = !empty($data['pass_hash']);
@@ -300,13 +325,12 @@ if ($isFile) {
                         if (!$passReq) $viewState = 'error';
                         app_log('AUTH_FAIL', "FileID: $reqFile");
                     } else {
-                        $mk = decrypt_data($data['master_key_enc'], derive_key($passReq?$userPass:$_GET['code'], base64_decode($data['salt'])));
-
+                        $salt = base64_decode($data['salt'], true);
+                        $mk = decrypt_data($data['master_key_enc'], derive_key($passReq ? $userPass : $_GET['code'], $salt));
+                        
                         if ($mk === false) {
-                            if(isset($data['file_path']) && file_exists($data['file_path'])) unlink($data['file_path']);
-                            ftruncate($fp, 0); unlink($file);
-                            $viewState = 'error'; $err = $L['msg_404'];
-                            app_log('DECRYPT_FAIL', "FileID: $reqFile - Destroyed");
+                            $shouldBurn = true; $viewState = 'error'; $err = $L['msg_404'];
+                            app_log('DECRYPT_FAIL', "FileID: $reqFile - Key Invalid");
                         } else {
                             $msg = decrypt_data($data['msg'], $mk);
                             $name = decrypt_data($data['name'], $mk);
@@ -320,10 +344,10 @@ if ($isFile) {
                                         $fileName = str_replace(['/','\\',':'], '', decrypt_data($data['file_name'], $mk));
                                         if (ob_get_level()) ob_end_clean();
                                         header('Content-Type: application/octet-stream');
-                                        header('Content-Disposition: attachment; filename="'.$fileName.'"');
+                                        header('Content-Disposition: attachment; filename*=UTF-8\'\''.rawurlencode($fileName));
                                         header('Content-Length: ' . strlen($decFile));
-                                        echo $decFile; 
-                                        $viewState='downloaded'; 
+                                        echo $decFile;
+                                        $viewState = 'downloaded';
                                         app_log('DOWNLOAD', "FileID: $reqFile");
                                     }
                                 } else {
@@ -339,29 +363,34 @@ if ($isFile) {
                         }
                     }
                     
-                    if ($viewState === 'view' || $viewState === 'downloaded') {
+                    if (($viewState === 'view' || $viewState === 'downloaded') && !$shouldBurn) {
                         $data['reads']--;
-                        $shouldDelete = $data['reads'] <= 0;
-                        if ($shouldDelete && $viewState === 'view' && !empty($data['file_path']) && file_exists($data['file_path'])) {
-                            $shouldDelete = false;
-                        }
-
-                        if ($shouldDelete) {
-                            if(isset($data['file_path']) && file_exists($data['file_path'])) unlink($data['file_path']);
-                            ftruncate($fp, 0); unlink($file); 
-                            app_log('BURN', "FileID: $reqFile");
+                        if ($data['reads'] <= 0) {
+                            $shouldBurn = true;
                         } else {
-                            rewind($fp); atomic_write($file, json_encode($data, JSON_UNESCAPED_SLASHES|JSON_UNESCAPED_UNICODE));
+                            ftruncate($fp, 0); rewind($fp);
+                            fwrite($fp, json_encode($data, JSON_UNESCAPED_SLASHES|JSON_UNESCAPED_UNICODE));
                         }
-                        
-                        if ($viewState === 'downloaded') exit;
-                    } elseif ($viewState !== 'error') $viewState = 'password';
+                    }
                 } else {
                     $viewState = 'password';
                     app_log('VISIT_GATE', "FileID: $reqFile");
                 }
             }
-            flock($fp, LOCK_UN); fclose($fp);
+            
+            if ($shouldBurn) {
+                if (isset($data['file_path']) && file_exists($data['file_path'])) unlink($data['file_path']);
+                ftruncate($fp, 0); 
+            }
+            
+            flock($fp, LOCK_UN);
+            fclose($fp);
+            
+            if ($shouldBurn) {
+                unlink($file);
+                if ($viewState !== 'error' && $viewState !== 'downloaded') app_log('BURN', "FileID: $reqFile");
+            }
+            if ($viewState === 'downloaded') exit;
         } else {
             die($L['err_sys']);
         }
@@ -424,9 +453,12 @@ if ($isFile) {
         .markdown-body blockquote { border-left: 3px solid #84cc16; padding-left: 0.8rem; color: #64748b; }
         .markdown-body pre { background: rgba(0,0,0,0.05); padding: 0.8rem; border-radius: 0.5rem; overflow-x: auto; }
         .dark .markdown-body pre { background: rgba(0,0,0,0.4); }
+        .urgent-pulse { font-size: 3.5rem; color: #ef4444; font-weight: 800; animation: ping-text 1s cubic-bezier(0, 0, 0.2, 1) infinite; }
+        @keyframes ping-text { 50% { transform: scale(1.1); opacity: 0.8; } }
     </style>
 </head>
 <body class="min-h-screen flex flex-col text-gray-800 dark:text-gray-100">
+
 <div class="flex-grow flex items-center justify-center p-4">
     <div class="w-full max-w-6xl">
     <?php 
@@ -438,6 +470,7 @@ if ($isFile) {
         </div>";
     }
     ?>
+
     <?php if ($viewState === 'success'): ?>
         <div class="glass rounded-2xl p-8 max-w-xl mx-auto text-center animate-fade-in border-0 overflow-hidden relative">
             <div class="absolute -top-10 -right-10 w-32 h-32 bg-lime-400/20 rounded-full blur-2xl"></div>
@@ -448,28 +481,49 @@ if ($isFile) {
                 <div class="bg-white/40 dark:bg-black/30 border border-lime-200/50 dark:border-lime-800/30 rounded-xl p-3 mb-6 font-mono text-xs text-emerald-800 dark:text-lime-300 break-all select-all shadow-inner relative group"><?php echo $link; ?></div>
                 <div class="flex gap-3 justify-center">
                     <button onclick="copyLink('<?php echo $link; ?>')" class="bg-gradient-to-r from-emerald-500 to-lime-500 hover:from-emerald-400 hover:to-lime-400 text-white px-6 py-2.5 rounded-lg text-xs font-bold shadow-lg shadow-emerald-500/20 active:scale-95 transition-all w-full flex items-center justify-center gap-2"><i class="fas fa-copy"></i> <?php echo $L['copy']; ?></button>
-                    <a href="/" class="px-6 py-2.5 rounded-lg text-xs font-bold text-emerald-800 bg-lime-100/50 hover:bg-lime-100 transition-colors w-1/3 text-center"><?php echo $L['back']; ?></a>
+                    <a href="<?php echo $selfUrl; ?>" class="px-6 py-2.5 rounded-lg text-xs font-bold text-emerald-800 bg-lime-100/50 hover:bg-lime-100 transition-colors w-1/3 text-center"><?php echo $L['back']; ?></a>
                 </div>
             </div>
         </div>
+
     <?php elseif ($viewState === 'error'): ?>
         <div class="glass rounded-2xl p-10 max-w-md mx-auto text-center animate-fade-in relative overflow-hidden">
             <div class="relative z-10">
                 <div class="mb-6 inline-flex items-center justify-center w-20 h-20 rounded-full bg-red-50/50 dark:bg-red-900/20"><i class="fas fa-link-slash text-4xl text-red-400/80"></i></div>
                 <h2 class="text-2xl font-bold mb-2"><?php echo $L['msg_404']; ?></h2>
                 <p class="text-xs text-gray-500 dark:text-gray-400 mb-8 leading-relaxed"><?php echo $L['msg_404_desc']; ?></p>
-                <a href="/" class="inline-flex items-center gap-2 glass px-8 py-3 rounded-full text-emerald-600 dark:text-lime-400 text-sm font-bold hover:bg-white/60 dark:hover:bg-black/20 transition-all hover:scale-105 shadow-sm"><i class="fas fa-house"></i> <?php echo $L['back']; ?></a>
+                <a href="<?php echo $selfUrl; ?>" class="inline-flex items-center gap-2 glass px-8 py-3 rounded-full text-emerald-600 dark:text-lime-400 text-sm font-bold hover:bg-white/60 dark:hover:bg-black/20 transition-all hover:scale-105 shadow-sm"><i class="fas fa-house"></i> <?php echo $L['back']; ?></a>
             </div>
         </div>
+
     <?php elseif ($viewState === 'wait'): ?>
         <div class="glass rounded-2xl p-10 max-w-md mx-auto text-center animate-fade-in relative overflow-hidden">
             <div class="relative z-10">
                 <div class="mb-6 animate-pulse"><i class="fas fa-hourglass-half text-6xl text-yellow-500"></i></div>
                 <h2 class="text-2xl font-bold mb-2"><?php echo $L['wait_msg']; ?></h2>
-                <p class="text-xs text-gray-500 dark:text-gray-400 mb-8 leading-relaxed"><?php echo sprintf($L['wait_desc'], $waitStr); ?></p>
-                <a href="/" class="inline-flex items-center gap-2 glass px-8 py-3 rounded-full text-gray-600 text-sm font-bold hover:bg-white/60 transition-all hover:scale-105 shadow-sm"><?php echo $L['back']; ?></a>
+                <p class="text-xs text-gray-500 dark:text-gray-400 mb-8 leading-relaxed">
+                    <?php echo $L['wait_desc']; ?> <span id="cd-timer" class="font-bold">...</span>
+                </p>
+                <a href="<?php echo $selfUrl; ?>" class="inline-flex items-center gap-2 glass px-8 py-3 rounded-full text-gray-600 text-sm font-bold hover:bg-white/60 transition-all hover:scale-105 shadow-sm"><?php echo $L['back']; ?></a>
             </div>
         </div>
+        <script>
+            let sec = <?php echo $waitSecs; ?>;
+            function upT() {
+                sec--;
+                const el = document.getElementById('cd-timer');
+                if (sec <= 0) { location.reload(); return; }
+                if (sec > 60) {
+                    let d = Math.floor(sec/86400), h = Math.floor((sec%86400)/3600), m = Math.floor((sec%3600)/60);
+                    el.innerHTML = `${d}d ${h}h ${m}m`;
+                } else {
+                    el.innerHTML = sec + 's';
+                    if (sec <= 10) { el.className = 'urgent-pulse block mt-2'; }
+                }
+            }
+            setInterval(upT, 1000); upT();
+        </script>
+
     <?php elseif ($viewState === 'view'): ?>
         <div class="glass rounded-2xl w-full max-w-4xl h-[600px] flex flex-col relative overflow-hidden mx-auto">
             <div class="px-6 py-4 flex justify-between items-center z-10">
@@ -489,7 +543,7 @@ if ($isFile) {
                         <div class="w-8 h-8 rounded-full bg-emerald-100 dark:bg-emerald-800 flex items-center justify-center text-emerald-600 dark:text-emerald-300 text-sm"><i class="fas fa-file-arrow-down"></i></div>
                         <div><div class="font-bold text-xs text-emerald-900 dark:text-lime-200"><?php echo $L['file_ready']; ?></div><div class="text-[10px] text-emerald-600 dark:text-lime-400 max-w-[150px] truncate"><?php echo htmlspecialchars($fileName); ?></div></div>
                     </div>
-                    <form method="post" action="?file=<?php echo urlencode($reqFile); ?>&code=<?php echo urlencode($_GET['code']); ?>&download=1" target="_blank">
+                    <form method="post" action="<?php echo $selfUrl; ?>?file=<?php echo urlencode($reqFile); ?>&code=<?php echo urlencode($_GET['code']); ?>&download=1" target="_blank">
                         <?php if($passReq): ?><input type="hidden" name="pass" value="<?php echo htmlspecialchars($userPass); ?>"><?php endif; ?>
                         <button type="submit" class="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-bold rounded-lg shadow-lg shadow-emerald-500/20 transition-all flex items-center gap-1 cursor-pointer"><i class="fas fa-download"></i> <?php echo $L['download']; ?></button>
                     </form>
@@ -500,6 +554,7 @@ if ($isFile) {
             </div>
         </div>
         <script>document.getElementById('content-view').innerHTML = DOMPurify.sanitize(marked.parse(document.getElementById('raw-content').value), {FORBID_TAGS: ['img']});</script>
+
     <?php elseif ($viewState === 'password'): ?>
         <div class="glass rounded-2xl p-10 max-w-md mx-auto text-center relative">
             <div class="absolute top-4 right-4"><?php echo renderTools($L, $langCode); ?></div>
@@ -507,7 +562,7 @@ if ($isFile) {
             <h2 class="text-xl font-bold mb-1"><?php echo $passReq ? $L['pass_req'] : $L['msg_view']; ?></h2>
             <p class="text-xs text-gray-500 mb-6"><?php echo sprintf($L['left'], $data['reads']); ?></p>
             <?php if(isset($err)) echo "<div class='text-red-500 text-[10px] mb-4 bg-red-50/50 dark:bg-red-900/30 py-1.5 rounded font-medium'>$err</div>"; ?>
-            <form method="post" action="?file=<?php echo urlencode($reqFile); ?>&code=<?php echo urlencode($_GET['code']); ?>&confirm=1">
+            <form method="post" action="<?php echo $selfUrl; ?>?file=<?php echo urlencode($reqFile); ?>&code=<?php echo urlencode($_GET['code']); ?>&confirm=1">
                 <input type="hidden" name="csrf_token" value="<?php echo $_SESSION['csrf_token']; ?>">
                 <?php if($passReq): ?>
                     <input type="password" name="pass" class="glass-input w-full px-4 py-2.5 rounded-xl mb-4 text-center outline-none text-base tracking-widest" placeholder="••••••" required autofocus>
@@ -515,6 +570,7 @@ if ($isFile) {
                 <button class="w-full bg-gradient-to-r from-emerald-500 to-lime-500 hover:from-emerald-600 hover:to-lime-600 text-white py-2.5 rounded-xl font-bold shadow-lg shadow-emerald-500/25 transition-all"><?php echo $passReq ? $L['unlock'] : $L['msg_view']; ?></button>
             </form>
         </div>
+
     <?php else: ?>
         <form method="post" enctype="multipart/form-data" class="grid grid-cols-1 lg:grid-cols-12 gap-4 w-full h-auto lg:h-[600px]">
             <input type="hidden" name="csrf_token" value="<?php echo $_SESSION['csrf_token']; ?>">
@@ -618,12 +674,14 @@ if ($isFile) {
     <?php endif; ?>
     </div>
 </div>
+
 <footer class="py-4 text-center text-[10px] text-white/90 font-medium flex items-center justify-center gap-2 drop-shadow-[0_1px_2px_rgba(0,0,0,0.5)] z-20">
     <div class="px-4 py-1.5 bg-black/20 rounded-full backdrop-blur-sm flex items-center gap-3 shadow-2xl hover:bg-black/30 transition-all">
         <span>&copy; <?php echo date('Y'); ?> BurnRead Prince</span><span class="opacity-50">|</span>
-        <a href="https://github.com/Andeasw/BurnRead" target="_blank" class="hover:scale-110 transition opacity-70 hover:opacity-100 text-white drop-shadow-md"><svg height="14" width="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"></path></svg></a>
+        <a href="https://github.com/Andeasw/BurnRead" target="_blank" class="hover:scale-110 transition opacity-70 hover:opacity-100 text-white drop-shadow-md"><i class="fab fa-github"></i></a>
     </div>
 </footer>
+
 <script>
     const maxR = <?php echo $maxReads; ?>;
     function setRead(v) { document.getElementById('limitInput').value = v; }
