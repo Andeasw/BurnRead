@@ -15,6 +15,18 @@ if (empty($_SESSION['csrf_token'])) $_SESSION['csrf_token'] = bin2hex(random_byt
 
 $selfUrl = basename($_SERVER['PHP_SELF']);
 
+// --- HKDF Key Derivation ---
+function derive_server_key(string $envKey): string {
+    return hash_hkdf(
+        'sha256',
+        $envKey,
+        32,
+        'burnread-master-key-context',
+        'burnread-static-salt-v2'
+    );
+}
+
+// --- Garbage Collection ---
 function gc_cleanup() {
     global $env;
     if (mt_rand(1, 100) !== 1) return;
@@ -39,6 +51,7 @@ function gc_cleanup() {
     }
 }
 
+// --- Init Directories & Security ---
 function secure_path($path) {
     if (!is_dir($path)) mkdir($path, 0755, true);
     if (!file_exists($path . '/index.php')) file_put_contents($path . '/index.php', '<?php header("HTTP/1.0 404 Not Found"); exit;');
@@ -48,12 +61,15 @@ secure_path('burnread_data');
 secure_path('burnread_uploads');
 secure_path('burnread_logs');
 
+// Fix: Robust .htaccess Check
 $rootHtaccess = __DIR__ . '/.htaccess';
-if (!file_exists($rootHtaccess) || strpos(file_get_contents($rootHtaccess), '.burnread.env') === false) {
-    $rules = "\n<FilesMatch \"^(\\.burnread\\.env|.*\\.log)$\">\nRequire all denied\n</FilesMatch>\n";
-    file_put_contents($rootHtaccess, $rules, FILE_APPEND);
+$htContent = file_exists($rootHtaccess) ? file_get_contents($rootHtaccess) : '';
+if (strpos($htContent, 'BurnRead-Protection') === false) {
+    $rules = "\n# BurnRead-Protection\n<FilesMatch \"^(\\.burnread\\.env|.*\\.log)$\">\nRequire all denied\n</FilesMatch>\n";
+    file_put_contents($rootHtaccess, $rules, FILE_APPEND | LOCK_EX);
 }
 
+// --- Environment ---
 $envPath = __DIR__ . '/.burnread.env';
 if (!file_exists($envPath)) {
     $proto = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on') ? "https" : "http";
@@ -78,7 +94,7 @@ if (!file_exists($envPath)) {
         "MAX_EXPIRY_DAYS=\"30\"",
         "MAX_DELAY_DAYS=\"30\"",
         "UPLOAD_MAX_MB=\"5\"",
-        "UPLOAD_TYPES=\"png,jpg,gif,webp,ico,zip,rar,7z,pdf,txt,doc,docx,xls,xlsx\""
+        "UPLOAD_TYPES=\"png,jpg,gif,webp,ico,zip,rar,7z,pdf,txt,doc,docx,xls,xlsx,ppt,pptx\""
     ]);
     file_put_contents($envPath, $defEnv);
     chmod($envPath, 0600);
@@ -105,7 +121,7 @@ if (empty($env['ENCRYPTION_KEY'])) die("Config Error: Missing Key");
 date_default_timezone_set($env['TIMEZONE'] ?? 'Asia/Shanghai');
 gc_cleanup();
 
-$serverKey = $env['ENCRYPTION_KEY'];
+$serverKey = derive_server_key($env['ENCRYPTION_KEY']);
 $domain = rtrim($env['SITE_DOMAIN'] ?? '', '/');
 $maxReads = intval($env['MAX_READ_LIMIT'] ?? 10);
 $maxExp = intval($env['MAX_EXPIRY_DAYS'] ?? 30);
@@ -113,13 +129,13 @@ $maxDelay = intval($env['MAX_DELAY_DAYS'] ?? 30);
 $uploadMaxMB = intval($env['UPLOAD_MAX_MB'] ?? 5);
 $allowedExts = explode(',', $env['UPLOAD_TYPES'] ?? 'png,jpg,zip,txt');
 
+// --- Helpers ---
 function app_log($action, $info = '') {
     global $env;
     if (($env['ENABLE_LOGGING'] ?? 'false') !== 'true') return;
     
     $logDir = __DIR__ . '/burnread_logs';
     $logFile = $logDir . '/' . date('Y-m-d') . '.log';
-    
     $maxSize = intval($env['LOG_MAX_SIZE'] ?? 30) * 1048576;
     if (file_exists($logFile) && filesize($logFile) > $maxSize) return;
 
@@ -174,7 +190,7 @@ $i18n = [
         'err_empty' => '内容不能为空', 'err_pass' => '密码错误或信息已失效', 'err_csrf' => '会话过期，请刷新',
         'sec_info' => '基础信息', 'sec_safe' => '安全控制',
         'upload_label' => '加密附件', 'upload_hint' => '最大 %sMB, 支持: %s',
-        'download' => '下载附件', 'err_upload' => '文件不合规或过大', 'max_limit' => '上限: %s次', 
+        'download' => '下载附件', 'err_upload' => '文件类型不合规或伪装文件', 'max_limit' => '上限: %s次', 
         'max_time' => '最长: '.$maxExp.'天', 'max_delay' => '最长: '.$maxDelay.'天',
         'file_ready' => '包含加密附件', 'select_file' => '选择文件...',
         'gen_pass' => '随机密码', 'toggle_pass' => '显隐',
@@ -196,7 +212,7 @@ $i18n = [
         'err_empty' => 'Content cannot be empty', 'err_pass' => 'Invalid Password/State', 'err_csrf' => 'Session expired',
         'sec_info' => 'Info', 'sec_safe' => 'Security',
         'upload_label' => 'Attachment', 'upload_hint' => 'Max %sMB, types: %s',
-        'download' => 'Download', 'err_upload' => 'Invalid File', 'max_limit' => 'Max: %s', 
+        'download' => 'Download', 'err_upload' => 'Invalid file type or mismatch', 'max_limit' => 'Max: %s', 
         'max_time' => 'Max: '.$maxExp.'d', 'max_delay' => 'Max: '.$maxDelay.'d',
         'file_ready' => 'File Attached', 'select_file' => 'Select File...',
         'gen_pass' => 'Random', 'toggle_pass' => 'Show',
@@ -207,6 +223,14 @@ $i18n = [
 ];
 $L = $i18n[$langCode];
 
+$mimeMap = [
+    'jpg' => 'image/jpeg', 'jpeg' => 'image/jpeg', 'png' => 'image/png', 'gif' => 'image/gif', 'webp' => 'image/webp', 'ico' => 'image/x-icon',
+    'txt' => 'text/plain', 'pdf' => 'application/pdf', 'zip' => 'application/zip', 'rar' => 'application/x-rar-compressed', '7z' => 'application/x-7z-compressed',
+    'doc' => 'application/msword', 'docx' => 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'xls' => 'application/vnd.ms-excel', 'xlsx' => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'ppt' => 'application/vnd.ms-powerpoint', 'pptx' => 'application/vnd.openxmlformats-officedocument.presentationml.presentation'
+];
+
 $isPost = $_SERVER['REQUEST_METHOD'] === 'POST';
 $reqFile = $_GET['file'] ?? '';
 $isFile = !empty($reqFile) && isset($_GET['code']);
@@ -214,6 +238,7 @@ $viewState = 'create';
 $name = ''; $note = ''; $msg = ''; $fileName = '';
 $waitSecs = 0;
 
+// --- CREATE ---
 if ($isPost && !$isFile) {
     if (!hash_equals($_SESSION['csrf_token'], $_POST['csrf_token'] ?? '')) die($L['err_csrf']);
     if (strlen($_POST['message']??'') > 200000 || strlen($_POST['name']??'') > 64 || strlen($_POST['note']??'') > 128) die($L['err_len']);
@@ -228,7 +253,23 @@ if ($isPost && !$isFile) {
     if (!empty($_FILES['file']['name'])) {
         $f = $_FILES['file'];
         $ext = strtolower(pathinfo($f['name'], PATHINFO_EXTENSION));
-        if ($f['size'] > $uploadMaxMB*1048576 || !in_array($ext, $allowedExts)) die($L['err_upload']);
+        
+        $finfo = finfo_open(FILEINFO_MIME_TYPE);
+        $mime = finfo_file($finfo, $f['tmp_name']);
+        finfo_close($finfo);
+        
+        $isValid = false;
+        if (isset($mimeMap[$ext])) {
+            if (in_array($ext, ['zip','docx','xlsx','pptx','rar','7z'])) {
+                if (strpos($mime, 'zip') !== false || strpos($mime, 'compressed') !== false || strpos($mime, 'octet-stream') !== false || strpos($mime, 'office') !== false) {
+                    $isValid = true;
+                }
+            } elseif ($mimeMap[$ext] === $mime) {
+                $isValid = true;
+            }
+        }
+        
+        if ($f['size'] > $uploadMaxMB*1048576 || !in_array($ext, $allowedExts) || !$isValid) die($L['err_upload']);
         
         $encFileName = 'burnread_uploads/'.bin2hex(random_bytes(32)).'.dat';
         file_put_contents($encFileName, encrypt_data(file_get_contents($f['tmp_name']), $masterKey));
@@ -240,7 +281,10 @@ if ($isPost && !$isFile) {
     $wrappingKey = (!empty($userPass)) ? derive_key($userPass, $salt) : derive_key($verifyCode, $salt);
     
     $now = time();
-    $expS = max(min((intval($_POST['ed']??0)*86400) + (intval($_POST['eh']??0)*3600) + (intval($_POST['em']??0)*60), $maxExp*86400), 7*86400);
+    
+    $rawExp = (intval($_POST['ed']??0)*86400) + (intval($_POST['eh']??0)*3600) + (intval($_POST['em']??0)*60);
+    $expS = min(max($rawExp, 60), $maxExp*86400);
+
     $delayS = min((intval($_POST['dd']??0)*86400) + (intval($_POST['dh']??0)*3600) + (intval($_POST['dm']??0)*60), $maxDelay*86400);
     
     $fileId = bin2hex(random_bytes(32)); 
@@ -256,7 +300,8 @@ if ($isPost && !$isFile) {
         'pass_hash' => (!empty($userPass)) ? password_hash($userPass, PASSWORD_ARGON2ID) : null,
         'code_hash' => hash('sha256', $verifyCode),
         'time' => $now, 'avail' => $now + $delayS, 'exp' => $expS, 
-        'reads' => min(max(intval($_POST['limit']??1), 1), $maxReads)
+        'reads' => min(max(intval($_POST['limit']??1), 1), $maxReads),
+        'fails' => 0 
     ];
     
     if (file_put_contents($fname, json_encode($data, JSON_UNESCAPED_SLASHES|JSON_UNESCAPED_UNICODE))) {
@@ -269,6 +314,7 @@ if ($isPost && !$isFile) {
     }
 }
 
+// --- READ / DOWNLOAD ---
 if ($isFile) {
     ignore_user_abort(true);
     
@@ -291,7 +337,10 @@ if ($isFile) {
             
             if (!is_array($data) || !isset($data['master_key_enc']) || ($now - $data['time'] > $data['exp'])) {
                 $shouldBurn = true; $viewState = 'error'; app_log('EXPIRED', "FileID: $reqFile");
-            } 
+            }
+            elseif (isset($data['fails']) && $data['fails'] >= 5) {
+                 $shouldBurn = true; $viewState = 'error'; app_log('BRUTE_FORCE_LOCK', "FileID: $reqFile");
+            }
             elseif ($data['reads'] <= 0 && !isset($_GET['download'])) {
                 $shouldBurn = true; $viewState = 'error'; app_log('BURNED_ENTRY', "FileID: $reqFile");
             }
@@ -308,10 +357,24 @@ if ($isFile) {
                 $isDownload = isset($_GET['download']);
                 
                 if ($confirm) {
+                    if (!hash_equals($_SESSION['csrf_token'], $_POST['csrf_token'] ?? '')) {
+                         die($L['err_csrf']);
+                    }
+
                     $userPass = $_POST['pass'] ?? ''; 
                     $authValid = $passReq ? password_verify($userPass, $data['pass_hash']) : hash_equals($data['code_hash'], hash('sha256', $_GET['code']));
                     
                     if (!$authValid) {
+                        $data['fails'] = ($data['fails'] ?? 0) + 1;
+                        if ($data['fails'] >= 5) {
+                            $shouldBurn = true;
+                            app_log('BRUTE_FORCE_BURN', "FileID: $reqFile - Max attempts reached");
+                        } else {
+                            ftruncate($fp, 0); rewind($fp);
+                            fwrite($fp, json_encode($data, JSON_UNESCAPED_SLASHES|JSON_UNESCAPED_UNICODE));
+                            usleep(300000); 
+                        }
+                        
                         $err = $passReq ? $L['err_pass'] : $L['msg_404'];
                         if (!$passReq) $viewState = 'error';
                         app_log('AUTH_FAIL', "FileID: $reqFile");
@@ -541,6 +604,7 @@ if ($isFile) {
                         <div><div class="font-bold text-xs text-emerald-900 dark:text-lime-200"><?php echo $L['file_ready']; ?></div><div class="text-[10px] text-emerald-600 dark:text-lime-400 max-w-[150px] truncate"><?php echo htmlspecialchars($fileName); ?></div></div>
                     </div>
                     <form method="post" action="<?php echo $selfUrl; ?>?file=<?php echo urlencode($reqFile); ?>&code=<?php echo urlencode($_GET['code']); ?>&download=1" target="_blank">
+                        <input type="hidden" name="csrf_token" value="<?php echo $_SESSION['csrf_token']; ?>">
                         <?php if($passReq): ?><input type="hidden" name="pass" value="<?php echo htmlspecialchars($userPass); ?>"><?php endif; ?>
                         <button type="submit" class="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-bold rounded-lg shadow-lg shadow-emerald-500/20 transition-all flex items-center gap-1 cursor-pointer"><i class="fas fa-download"></i> <?php echo $L['download']; ?></button>
                     </form>
