@@ -94,7 +94,7 @@ if (!file_exists($envPath)) {
         "MAX_EXPIRY_DAYS=\"30\"",
         "MAX_DELAY_DAYS=\"30\"",
         "UPLOAD_MAX_MB=\"5\"",
-        "UPLOAD_TYPES=\"png,jpg,gif,webp,ico,zip,rar,7z,pdf,txt,doc,docx,xls,xlsx,ppt,pptx\""
+        "UPLOAD_TYPES=\"png,jpg,gif,webp,ico,zip,rar,7z,pdf,txt,doc,docx,xls,xlsx\""
     ]);
     file_put_contents($envPath, $defEnv);
     chmod($envPath, 0600);
