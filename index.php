@@ -713,7 +713,7 @@ if ($isFile) {
                     <button class="w-full bg-gradient-to-r from-emerald-500 to-lime-600 hover:from-emerald-400 hover:to-lime-500 text-white py-3 rounded-xl font-bold mt-3 shadow-lg shadow-emerald-500/30 flex items-center justify-center gap-2 transition-all transform hover:-translate-y-0.5 text-sm shrink-0 border border-white/10"><i class="fas fa-lock"></i> <?php echo $L['gen_btn']; ?></button>
                 </div>
             </div>
-            <div class="lg:col-span-8 h-full">
+            <div class="lg:col-span-8 h-[500px] lg:h-full">
                 <div class="glass rounded-2xl h-full flex flex-col p-1 relative overflow-hidden shadow-xl">
                     <div class="flex justify-between items-center px-5 py-3 z-20 relative">
                         <div class="bg-gray-200/40 dark:bg-black/20 rounded-full p-1 flex">
